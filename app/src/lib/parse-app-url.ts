@@ -21,6 +21,13 @@ export interface IOpenRepositoryFromURLAction {
 
   /** the file to open after cloning the repository */
   readonly filepath: string | null
+
+  /**
+   * When true (set via `?activate=false` on the URL), the main process should
+   * select the repository without bringing the window to the foreground. Used
+   * by tooling that wants Desktop to track the active workspace silently.
+   */
+  readonly openInBackground: boolean
 }
 
 export interface IUnknownAction {
@@ -99,6 +106,7 @@ export function parseAppURL(url: string): URLActionType {
     const pr = getQueryStringValue(query, 'pr')
     const branch = getQueryStringValue(query, 'branch')
     const filepath = getQueryStringValue(query, 'filepath')
+    const activate = getQueryStringValue(query, 'activate')
 
     if (pr != null) {
       if (!/^\d+$/.test(pr)) {
@@ -121,6 +129,7 @@ export function parseAppURL(url: string): URLActionType {
       branch,
       pr,
       filepath,
+      openInBackground: activate === 'false',
     }
   }
 

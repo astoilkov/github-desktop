@@ -159,10 +159,14 @@ initializeDesktopNotifications()
 function handleAppURL(url: string) {
   log.info('Processing protocol url')
   const action = parseAppURL(url)
+  const background =
+    action.name === 'open-repository-from-url' && action.openInBackground
   onDidLoad(window => {
-    // This manual focus call _shouldn't_ be necessary, but is for Chrome on
-    // macOS. See https://github.com/desktop/desktop/issues/973.
-    window.focus()
+    if (!background) {
+      // This manual focus call _shouldn't_ be necessary, but is for Chrome on
+      // macOS. See https://github.com/desktop/desktop/issues/973.
+      window.focus()
+    }
     window.sendURLAction(action)
   })
 }

@@ -298,7 +298,15 @@ export class AppWindow {
 
   /** Send the URL action to the renderer. */
   public sendURLAction(action: URLActionType) {
-    this.show()
+    // `openrepo` URLs may opt out of activation via `?activate=false` so that
+    // editor integrations can keep Desktop in sync with the active workspace
+    // without stealing focus. See desktop/desktop#22150.
+    const background =
+      action.name === 'open-repository-from-url' && action.openInBackground
+
+    if (!background) {
+      this.show()
+    }
 
     ipcWebContents.send(this.window.webContents, 'url-action', action)
   }

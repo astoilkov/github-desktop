@@ -1,0 +1,77 @@
+diff --git a/app/src/lib/parse-app-url.ts b/app/src/lib/parse-app-url.ts
+index a81d2f418e..d9b655b110 100644
+--- a/app/src/lib/parse-app-url.ts
++++ b/app/src/lib/parse-app-url.ts
+@@ -21,6 +21,13 @@ export interface IOpenRepositoryFromURLAction {
+ 
+   /** the file to open after cloning the repository */
+   readonly filepath: string | null
++
++  /**
++   * When true (set via `?activate=false` on the URL), the main process should
++   * select the repository without bringing the window to the foreground. Used
++   * by tooling that wants Desktop to track the active workspace silently.
++   */
++  readonly openInBackground: boolean
+ }
+ 
+ export interface IUnknownAction {
+@@ -99,6 +106,7 @@ export function parseAppURL(url: string): URLActionType {
+     const pr = getQueryStringValue(query, 'pr')
+     const branch = getQueryStringValue(query, 'branch')
+     const filepath = getQueryStringValue(query, 'filepath')
++    const activate = getQueryStringValue(query, 'activate')
+ 
+     if (pr != null) {
+       if (!/^\d+$/.test(pr)) {
+@@ -121,6 +129,7 @@ export function parseAppURL(url: string): URLActionType {
+       branch,
+       pr,
+       filepath,
++      openInBackground: activate === 'false',
+     }
+   }
+ 
+diff --git a/app/src/main-process/app-window.ts b/app/src/main-process/app-window.ts
+index bb49c7fc82..1aade2996c 100644
+--- a/app/src/main-process/app-window.ts
++++ b/app/src/main-process/app-window.ts
+@@ -298,7 +298,15 @@ export class AppWindow {
+ 
+   /** Send the URL action to the renderer. */
+   public sendURLAction(action: URLActionType) {
+-    this.show()
++    // `openrepo` URLs may opt out of activation via `?activate=false` so that
++    // editor integrations can keep Desktop in sync with the active workspace
++    // without stealing focus. See desktop/desktop#22150.
++    const background =
++      action.name === 'open-repository-from-url' && action.openInBackground
++
++    if (!background) {
++      this.show()
++    }
+ 
+     ipcWebContents.send(this.window.webContents, 'url-action', action)
+   }
+diff --git a/app/src/main-process/main.ts b/app/src/main-process/main.ts
+index e700423b4e..6a0fe84a08 100644
+--- a/app/src/main-process/main.ts
++++ b/app/src/main-process/main.ts
+@@ -159,10 +159,14 @@ initializeDesktopNotifications()
+ function handleAppURL(url: string) {
+   log.info('Processing protocol url')
+   const action = parseAppURL(url)
++  const background =
++    action.name === 'open-repository-from-url' && action.openInBackground
+   onDidLoad(window => {
+-    // This manual focus call _shouldn't_ be necessary, but is for Chrome on
+-    // macOS. See https://github.com/desktop/desktop/issues/973.
+-    window.focus()
++    if (!background) {
++      // This manual focus call _shouldn't_ be necessary, but is for Chrome on
++      // macOS. See https://github.com/desktop/desktop/issues/973.
++      window.focus()
++    }
+     window.sendURLAction(action)
+   })
+ }
