@@ -160,7 +160,7 @@ function handleAppURL(url: string) {
   log.info('Processing protocol url')
   const action = parseAppURL(url)
   const background =
-    action.name === 'open-repository-from-url' && action.openInBackground
+    action.name === 'open-local-repository-from-url' && action.openInBackground
   onDidLoad(window => {
     if (!background) {
       // This manual focus call _shouldn't_ be necessary, but is for Chrome on

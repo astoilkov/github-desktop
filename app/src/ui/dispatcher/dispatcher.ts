@@ -40,6 +40,7 @@ import {
 } from '../../lib/git'
 import { isGitOnPath } from '../../lib/is-git-on-path'
 import {
+  IOpenLocalRepositoryFromURLAction,
   IOpenRepositoryFromURLAction,
   IUnknownAction,
   URLActionType,
@@ -1937,6 +1938,34 @@ export class Dispatcher {
     return false
   }
 
+  private async openLocalRepositoryFromUrl(
+    action: IOpenLocalRepositoryFromURLAction
+  ) {
+    const requestedPath = action.path
+
+    const path = await getRepositoryType(requestedPath)
+      .then(t =>
+        t.kind === 'regular' ? t.topLevelWorkingDirectory : requestedPath
+      )
+      .catch(e => {
+        log.error('Could not determine repository type', e)
+        return requestedPath
+      })
+
+    const { repositories } = this.appStore.getState()
+    const existingRepository = matchExistingRepository(repositories, path)
+
+    if (existingRepository) {
+      await this.selectRepository(existingRepository)
+    } else if (!action.openInBackground) {
+      // Only prompt the user to add an unknown repo when the URL asked to
+      // foreground the app. Silent activations should stay silent — they're
+      // sent by tooling on every workspace switch, and a popup on each one
+      // would be hostile.
+      await this.showPopup({ type: PopupType.AddRepository, path })
+    }
+  }
+
   private async openRepositoryFromUrl(action: IOpenRepositoryFromURLAction) {
     const { url, pr, branch, filepath } = action
 
@@ -2117,6 +2146,10 @@ export class Dispatcher {
 
       case 'open-repository-from-url':
         this.openRepositoryFromUrl(action)
+        break
+
+      case 'open-local-repository-from-url':
+        this.openLocalRepositoryFromUrl(action)
         break
 
       default:

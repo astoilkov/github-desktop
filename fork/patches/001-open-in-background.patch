@@ -1,11 +1,16 @@
 diff --git a/app/src/lib/parse-app-url.ts b/app/src/lib/parse-app-url.ts
-index a81d2f418e..d9b655b110 100644
+index a81d2f418e..8fb9b3a4dc 100644
 --- a/app/src/lib/parse-app-url.ts
 +++ b/app/src/lib/parse-app-url.ts
-@@ -21,6 +21,13 @@ export interface IOpenRepositoryFromURLAction {
- 
-   /** the file to open after cloning the repository */
+@@ -23,6 +23,20 @@ export interface IOpenRepositoryFromURLAction {
    readonly filepath: string | null
+ }
+ 
++export interface IOpenLocalRepositoryFromURLAction {
++  readonly name: 'open-local-repository-from-url'
++
++  /** Absolute filesystem path to the local repository / workspace. */
++  readonly path: string
 +
 +  /**
 +   * When true (set via `?activate=false` on the URL), the main process should
@@ -13,39 +18,56 @@ index a81d2f418e..d9b655b110 100644
 +   * by tooling that wants Desktop to track the active workspace silently.
 +   */
 +  readonly openInBackground: boolean
- }
- 
++}
++
  export interface IUnknownAction {
-@@ -99,6 +106,7 @@ export function parseAppURL(url: string): URLActionType {
-     const pr = getQueryStringValue(query, 'pr')
-     const branch = getQueryStringValue(query, 'branch')
-     const filepath = getQueryStringValue(query, 'filepath')
-+    const activate = getQueryStringValue(query, 'activate')
+   readonly name: 'unknown'
+   readonly url: string
+@@ -31,6 +45,7 @@ export interface IUnknownAction {
+ export type URLActionType =
+   | IOAuthAction
+   | IOpenRepositoryFromURLAction
++  | IOpenLocalRepositoryFromURLAction
+   | IUnknownAction
  
-     if (pr != null) {
-       if (!/^\d+$/.test(pr)) {
-@@ -121,6 +129,7 @@ export function parseAppURL(url: string): URLActionType {
-       branch,
-       pr,
-       filepath,
-+      openInBackground: activate === 'false',
+ // eslint-disable-next-line @typescript-eslint/naming-convention
+@@ -84,6 +99,21 @@ export function parseAppURL(url: string): URLActionType {
      }
    }
  
++  if (actionName === 'openlocalrepo') {
++    const path = getQueryStringValue(query, 'path')
++    if (path == null || path.length === 0) {
++      return unknown
++    }
++
++    const activate = getQueryStringValue(query, 'activate')
++
++    return {
++      name: 'open-local-repository-from-url',
++      path,
++      openInBackground: activate === 'false',
++    }
++  }
++
+   // we require something resembling a URL first
+   // - bail out if it's not defined
+   // - bail out if you only have `/`
 diff --git a/app/src/main-process/app-window.ts b/app/src/main-process/app-window.ts
-index bb49c7fc82..1aade2996c 100644
+index bb49c7fc82..dfa7e0fe65 100644
 --- a/app/src/main-process/app-window.ts
 +++ b/app/src/main-process/app-window.ts
-@@ -298,7 +298,15 @@ export class AppWindow {
+@@ -298,7 +298,16 @@ export class AppWindow {
  
    /** Send the URL action to the renderer. */
    public sendURLAction(action: URLActionType) {
 -    this.show()
-+    // `openrepo` URLs may opt out of activation via `?activate=false` so that
-+    // editor integrations can keep Desktop in sync with the active workspace
-+    // without stealing focus. See desktop/desktop#22150.
++    // `openLocalRepo` URLs may opt out of activation via `?activate=false` so
++    // that editor integrations can keep Desktop in sync with the active
++    // workspace without stealing focus. See desktop/desktop#22150.
 +    const background =
-+      action.name === 'open-repository-from-url' && action.openInBackground
++      action.name === 'open-local-repository-from-url' &&
++      action.openInBackground
 +
 +    if (!background) {
 +      this.show()
@@ -54,7 +76,7 @@ index bb49c7fc82..1aade2996c 100644
      ipcWebContents.send(this.window.webContents, 'url-action', action)
    }
 diff --git a/app/src/main-process/main.ts b/app/src/main-process/main.ts
-index e700423b4e..6a0fe84a08 100644
+index e700423b4e..a9d4a4206e 100644
 --- a/app/src/main-process/main.ts
 +++ b/app/src/main-process/main.ts
 @@ -159,10 +159,14 @@ initializeDesktopNotifications()
@@ -62,7 +84,7 @@ index e700423b4e..6a0fe84a08 100644
    log.info('Processing protocol url')
    const action = parseAppURL(url)
 +  const background =
-+    action.name === 'open-repository-from-url' && action.openInBackground
++    action.name === 'open-local-repository-from-url' && action.openInBackground
    onDidLoad(window => {
 -    // This manual focus call _shouldn't_ be necessary, but is for Chrome on
 -    // macOS. See https://github.com/desktop/desktop/issues/973.
@@ -75,3 +97,61 @@ index e700423b4e..6a0fe84a08 100644
      window.sendURLAction(action)
    })
  }
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 7e5ca5b394..9e8fa8f686 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -39,6 +39,7 @@ import {
+ } from '../../lib/git'
+ import { isGitOnPath } from '../../lib/is-git-on-path'
+ import {
++  IOpenLocalRepositoryFromURLAction,
+   IOpenRepositoryFromURLAction,
+   IUnknownAction,
+   URLActionType,
+@@ -1823,6 +1824,34 @@ export class Dispatcher {
+     return false
+   }
+ 
++  private async openLocalRepositoryFromUrl(
++    action: IOpenLocalRepositoryFromURLAction
++  ) {
++    const requestedPath = action.path
++
++    const path = await getRepositoryType(requestedPath)
++      .then(t =>
++        t.kind === 'regular' ? t.topLevelWorkingDirectory : requestedPath
++      )
++      .catch(e => {
++        log.error('Could not determine repository type', e)
++        return requestedPath
++      })
++
++    const { repositories } = this.appStore.getState()
++    const existingRepository = matchExistingRepository(repositories, path)
++
++    if (existingRepository) {
++      await this.selectRepository(existingRepository)
++    } else if (!action.openInBackground) {
++      // Only prompt the user to add an unknown repo when the URL asked to
++      // foreground the app. Silent activations should stay silent — they're
++      // sent by tooling on every workspace switch, and a popup on each one
++      // would be hostile.
++      await this.showPopup({ type: PopupType.AddRepository, path })
++    }
++  }
++
+   private async openRepositoryFromUrl(action: IOpenRepositoryFromURLAction) {
+     const { url, pr, branch, filepath } = action
+ 
+@@ -1988,6 +2017,10 @@ export class Dispatcher {
+         this.openRepositoryFromUrl(action)
+         break
+ 
++      case 'open-local-repository-from-url':
++        this.openLocalRepositoryFromUrl(action)
++        break
++
+       default:
+         const unknownAction: IUnknownAction = action
+         log.warn(

@@ -21,6 +21,13 @@ export interface IOpenRepositoryFromURLAction {
 
   /** the file to open after cloning the repository */
   readonly filepath: string | null
+}
+
+export interface IOpenLocalRepositoryFromURLAction {
+  readonly name: 'open-local-repository-from-url'
+
+  /** Absolute filesystem path to the local repository / workspace. */
+  readonly path: string
 
   /**
    * When true (set via `?activate=false` on the URL), the main process should
@@ -38,6 +45,7 @@ export interface IUnknownAction {
 export type URLActionType =
   | IOAuthAction
   | IOpenRepositoryFromURLAction
+  | IOpenLocalRepositoryFromURLAction
   | IUnknownAction
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -91,6 +99,21 @@ export function parseAppURL(url: string): URLActionType {
     }
   }
 
+  if (actionName === 'openlocalrepo') {
+    const path = getQueryStringValue(query, 'path')
+    if (path == null || path.length === 0) {
+      return unknown
+    }
+
+    const activate = getQueryStringValue(query, 'activate')
+
+    return {
+      name: 'open-local-repository-from-url',
+      path,
+      openInBackground: activate === 'false',
+    }
+  }
+
   // we require something resembling a URL first
   // - bail out if it's not defined
   // - bail out if you only have `/`
@@ -106,7 +129,6 @@ export function parseAppURL(url: string): URLActionType {
     const pr = getQueryStringValue(query, 'pr')
     const branch = getQueryStringValue(query, 'branch')
     const filepath = getQueryStringValue(query, 'filepath')
-    const activate = getQueryStringValue(query, 'activate')
 
     if (pr != null) {
       if (!/^\d+$/.test(pr)) {
@@ -129,7 +151,6 @@ export function parseAppURL(url: string): URLActionType {
       branch,
       pr,
       filepath,
-      openInBackground: activate === 'false',
     }
   }
 
