@@ -1,0 +1,31 @@
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index 7e42d873ec..f2121de422 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -3102,7 +3102,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+     if (repository) {
+       const alias = repository instanceof Repository ? repository.alias : null
+       icon = iconForRepository(repository)
+-      title = alias ?? repository.name
++      title = alias ?? Path.basename(repository.path)
+     } else if (this.state.repositories.length > 0) {
+       icon = octicons.repo
+       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
+diff --git a/app/src/ui/repositories-list/repository-list-item.tsx b/app/src/ui/repositories-list/repository-list-item.tsx
+index 54cbe675bb..81f9e27612 100644
+--- a/app/src/ui/repositories-list/repository-list-item.tsx
++++ b/app/src/ui/repositories-list/repository-list-item.tsx
+@@ -1,3 +1,4 @@
++import * as Path from 'path'
+ import * as React from 'react'
+ 
+ import { Repository } from '../../models/repository'
+@@ -71,7 +72,7 @@ export class RepositoryListItem extends React.Component<
+         <div className={classNames(classNameList)}>
+           {prefix ? <span className="prefix">{prefix}</span> : null}
+           <HighlightText
+-            text={alias ?? repository.name}
++            text={alias ?? Path.basename(repository.path)}
+             highlight={this.props.matches.title}
+           />
+         </div>

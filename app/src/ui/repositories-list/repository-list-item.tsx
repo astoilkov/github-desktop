@@ -1,3 +1,4 @@
+import * as Path from 'path'
 import * as React from 'react'
 
 import { Repository } from '../../models/repository'
@@ -71,7 +72,7 @@ export class RepositoryListItem extends React.Component<
         <div className={classNames(classNameList)}>
           {prefix ? <span className="prefix">{prefix}</span> : null}
           <HighlightText
-            text={alias ?? repository.name}
+            text={alias ?? Path.basename(repository.path)}
             highlight={this.props.matches.title}
           />
         </div>

@@ -3341,7 +3341,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     if (repository) {
       const alias = repository instanceof Repository ? repository.alias : null
       icon = iconForRepository(repository)
-      title = alias ?? repository.name
+      title = alias ?? Path.basename(repository.path)
     } else if (this.state.repositories.length > 0) {
       icon = octicons.repo
       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
