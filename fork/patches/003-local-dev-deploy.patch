@@ -1,0 +1,114 @@
+diff --git a/package.json b/package.json
+index 2e5903ca7c..2de713df2e 100644
+--- a/package.json
++++ b/package.json
+@@ -28,6 +28,8 @@
+     "compile:prod": "cross-env NODE_ENV=production TS_NODE_PROJECT=script/tsconfig.json NODE_OPTIONS='--max_old_space_size=4096' webpack --config app/webpack.production.ts",
+     "build:dev": "yarn compile:dev && cross-env NODE_ENV=development ts-node -P script/tsconfig.json script/build.ts",
+     "build:prod": "yarn compile:prod && cross-env NODE_ENV=production ts-node -P script/tsconfig.json script/build.ts",
++    "build:local": "yarn compile:prod && cross-env NODE_ENV=development ts-node -P script/tsconfig.json script/build.ts",
++    "deploy:local": "cross-env NODE_ENV=development ts-node -P script/tsconfig.json script/deploy-local.ts",
+     "package": "ts-node -P script/tsconfig.json script/package.ts",
+     "generate-octicons": "ts-node -P script/tsconfig.json script/generate-octicons.ts",
+     "compile:script": "tsc -P script/tsconfig.json",
+diff --git a/script/build.ts b/script/build.ts
+index 234ccf3b81..0470b17dc0 100755
+--- a/script/build.ts
++++ b/script/build.ts
+@@ -213,7 +213,12 @@ function packageApp() {
+       // will sign the app to run locally. We need to disable 'identity-validation'
+       // or otherwise it will replace '-' with one of the regular codesigning
+       // identities in our system.
+-      identity: isDevelopmentBuild ? '-' : undefined,
++      // Setting DESKTOP_DEV_CODESIGN_IDENTITY lets a local developer sign with
++      // a self-signed keychain cert so macOS firewall/keychain prompts don't
++      // re-fire on every rebuild.
++      identity: isDevelopmentBuild
++        ? process.env.DESKTOP_DEV_CODESIGN_IDENTITY || '-'
++        : undefined,
+       identityValidation: !isDevelopmentBuild,
+     },
+     osxNotarize,
+diff --git a/script/deploy-local.ts b/script/deploy-local.ts
+new file mode 100644
+index 0000000000..a49a6e2a42
+--- /dev/null
++++ b/script/deploy-local.ts
+@@ -0,0 +1,77 @@
++import { execFileSync, spawnSync } from 'child_process'
++import { cpSync, existsSync, rmSync } from 'fs'
++import { join } from 'path'
++
++import { getDistPath, getExecutableName } from './dist-info'
++
++const builtAppPath = join(getDistPath(), `${getExecutableName()}.app`)
++const installedAppPath = `/Applications/GitHub Desktop.app`
++
++// Electron-hosted shells (e.g. Claude Code, VS Code's integrated terminal)
++// export ELECTRON_RUN_AS_NODE=1, which `open` propagates to the launched app,
++// making the Electron binary run as plain Node — it opens no window and exits
++// silently. Strip it (and its Windows sibling) so the launch behaves the same
++// regardless of which shell `deploy:local` is run from.
++const {
++  ELECTRON_RUN_AS_NODE,
++  NoDefaultCurrentDirectoryInExePath,
++  ...cleanEnv
++} = process.env
++
++if (process.platform !== 'darwin') {
++  console.error('deploy:local is macOS-only.')
++  process.exit(1)
++}
++
++// Build with build:local: a production webpack compile (so the renderer is
++// self-contained — production references a local renderer.js, whereas the dev
++// compile points the renderer at the http://localhost:3000 dev server and only
++// works under `yarn start`) packaged with NODE_ENV=development (so it keeps the
++// isolated "-dev" name/bundleID/userData and is signed with the local cert
++// rather than requiring a Developer ID + notarization).
++console.log('Building app…')
++const build = spawnSync('yarn', ['build:local'], {
++  stdio: 'inherit',
++  env: cleanEnv,
++})
++if (build.status !== 0) {
++  process.exit(build.status ?? 1)
++}
++
++if (!existsSync(builtAppPath)) {
++  console.error(`Built app not found at ${builtAppPath}`)
++  process.exit(1)
++}
++
++console.log(`Quitting ${getExecutableName()} if running…`)
++spawnSync('osascript', ['-e', `quit app "${getExecutableName()}"`], {
++  stdio: 'ignore',
++})
++waitForExit(getExecutableName())
++
++if (existsSync(installedAppPath)) {
++  console.log(`Removing ${installedAppPath}…`)
++  rmSync(installedAppPath, { recursive: true, force: true })
++}
++
++console.log(`Copying to ${installedAppPath}…`)
++cpSync(builtAppPath, installedAppPath, {
++  recursive: true,
++  verbatimSymlinks: true,
++})
++
++console.log('Launching…')
++execFileSync('open', [installedAppPath], { env: cleanEnv })
++
++function waitForExit(processName: string) {
++  const deadline = Date.now() + 10_000
++  while (Date.now() < deadline) {
++    const result = spawnSync('pgrep', ['-x', processName])
++    if (result.status !== 0) {
++      return
++    }
++    spawnSync('sleep', ['0.2'])
++  }
++  console.warn(`${processName} did not quit within 10s; force killing.`)
++  spawnSync('pkill', ['-x', processName])
++}
