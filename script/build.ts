@@ -212,12 +212,7 @@ function packageApp() {
       // will sign the app to run locally. We need to disable 'identity-validation'
       // or otherwise it will replace '-' with one of the regular codesigning
       // identities in our system.
-      // Setting DESKTOP_DEV_CODESIGN_IDENTITY lets a local developer sign with
-      // a self-signed keychain cert so macOS firewall/keychain prompts don't
-      // re-fire on every rebuild.
-      identity: isDevelopmentBuild
-        ? process.env.DESKTOP_DEV_CODESIGN_IDENTITY || '-'
-        : undefined,
+      identity: isDevelopmentBuild ? '-' : undefined,
       identityValidation: !isDevelopmentBuild,
     },
     osxNotarize,
