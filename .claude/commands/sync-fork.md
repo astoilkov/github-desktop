@@ -1,8 +1,12 @@
 # /sync-fork
 
-Pull the latest commits from the `upstream` remote into the current fork branch
-and reapply (or, on drift, re-derive) every patch in `fork/patches/` using the
-matching `.md` as the source of truth.
+Pull commits from the `upstream` remote into the current fork branch **only up to
+the latest tagged GitHub Desktop release** (not the bleeding edge of the upstream
+branch), and reapply (or, on drift, re-derive) every patch in `fork/patches/`
+using the matching `.md` as the source of truth.
+
+We deliberately sync to a released tag rather than the branch HEAD so the fork
+always tracks a shipped, stable version instead of unreleased work-in-progress.
 
 ## Preconditions
 
@@ -17,23 +21,41 @@ Before doing anything, verify and stop with a clear message if any fails:
 
 ## Steps
 
-1. Identify the current branch (`git branch --show-current`) and the upstream
-   tracking branch. Default to `upstream/development`; if `git remote show upstream`
-   indicates a different default branch, use that. Confirm with the user only
-   if ambiguous.
+1. Identify the current branch (`git branch --show-current`).
 
-2. `git fetch upstream`. If the fetch yields no new commits and every patch
-   already applies in reverse (see step 4), tell the user the fork is already
-   in sync and exit.
+2. `git fetch upstream --tags --prune`. This brings in both the upstream branch
+   and every release tag.
 
-3. Merge upstream into the current branch with a merge commit so the fork
-   history stays linear-ish and reviewable:
-   `git merge <upstream-ref> --no-ff -m "Sync with <upstream-ref>"`.
-   If merge conflicts occur, resolve them by reading the conflicting hunks
-   together with any `fork/patches/*.md` whose `Touched files` overlap. If
-   the right resolution isn't clear, ask the user before picking a side.
+3. Determine the **latest GitHub Desktop release tag** — this is the sync target,
+   not the upstream branch HEAD. Upstream tags releases as `release-X.Y.Z` (the
+   same versions listed at https://github.com/desktop/desktop/tags). Pick the
+   highest semantic version, ignoring pre-release/beta/draft tags if a stable one
+   is higher:
 
-4. For each `fork/patches/NNN-*.patch` in numeric order, decide its state:
+   ```sh
+   git tag -l 'release-*' --sort=-version:refname | head -20
+   ```
+
+   Take the first stable (non `-beta`/`-test`/`-draft`) tag as `<release-tag>`.
+   If the most recent tags are ambiguous (e.g. a beta sorts above the latest
+   stable, or naming doesn't match `release-*`), confirm the chosen tag with the
+   user before merging. Record the resolved version for the final report.
+
+4. If the current branch already contains `<release-tag>`
+   (`git merge-base --is-ancestor <release-tag> HEAD` exits 0) and every patch
+   already applies in reverse (see step 5), tell the user the fork is already in
+   sync with the latest release and exit.
+
+5. Merge the release tag — and **only** up to that tag — into the current branch
+   with a merge commit so the fork history stays linear-ish and reviewable:
+   `git merge <release-tag> --no-ff -m "Sync with <release-tag>"`.
+   Because the target is a tag rather than the branch tip, commits upstream has
+   made after that release are intentionally left out. If merge conflicts occur,
+   resolve them by reading the conflicting hunks together with any
+   `fork/patches/*.md` whose `Touched files` overlap. If the right resolution
+   isn't clear, ask the user before picking a side.
+
+6. For each `fork/patches/NNN-*.patch` in numeric order, decide its state:
 
    - `git apply --check --reverse fork/patches/NNN-*.patch` exits 0
      → **already applied** (the merge preserved it). Skip; record as such.
@@ -56,22 +78,23 @@ Before doing anything, verify and stop with a clear message if any fails:
    Report each patch's status as you go: `already-applied`, `applied-cleanly`,
    or `re-derived (regenerated .patch)`.
 
-5. Stage every modified application file and any regenerated `.patch` files.
+7. Stage every modified application file and any regenerated `.patch` files.
    Create one commit:
-   `Sync upstream/<branch> and reapply fork patches`.
+   `Reapply fork patches after syncing <release-tag>`.
    Do **not** amend the merge commit; keep them separate so the history is
    readable.
 
-6. **Do not push.** Print:
+8. **Do not push.** Print:
+   - The release version/tag synced to.
    - The merge commit and the patch-apply commit hashes.
-   - The status table from step 4.
+   - The status table from step 6.
    - A single concatenated checklist built from the `## Verify` section of
      every patch's `.md`, so the user has one place to look for smoke tests.
 
 ## Rules
 
 - Never use `--force`, `--hard`, or any destructive flag. The drift-recovery
-  branch in step 4 handles patch failures without rewriting history.
+  branch in step 6 handles patch failures without rewriting history.
 - Never push, open a PR, or run `gh` write commands. The user reviews and
   pushes themselves.
 - If a patch's `.md` is missing or doesn't follow the format documented in
