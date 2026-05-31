@@ -1243,21 +1243,31 @@ export class App extends React.Component<IAppProps, IAppState> {
       // user may accidentally provide a folder within the repository
       // this ensures we use the repository root, if it is actually a repository
       // otherwise we consider it an untracked repository
-      const path = await getRepositoryType(paths[0])
-        .then(t =>
-          t.kind === 'regular' ? t.topLevelWorkingDirectory : paths[0]
-        )
-        .catch(e => {
-          log.error('Could not determine repository type', e)
-          return paths[0]
-        })
+      const repositoryType = await getRepositoryType(paths[0]).catch(e => {
+        log.error('Could not determine repository type', e)
+        return { kind: 'missing' } as const
+      })
+      const path =
+        repositoryType.kind === 'regular'
+          ? repositoryType.topLevelWorkingDirectory
+          : paths[0]
 
       const { repositories } = this.state
       const existingRepository = matchExistingRepository(repositories, path)
 
       if (existingRepository) {
         await dispatcher.selectRepository(existingRepository)
+      } else if (repositoryType.kind === 'regular') {
+        // It's already a valid Git repository, so add and open it directly
+        // instead of bouncing through the Add Local Repository dialog.
+        const addedRepositories = await dispatcher.addRepositories([path])
+
+        if (addedRepositories.length > 0) {
+          dispatcher.recordAddExistingRepository()
+          await dispatcher.selectRepository(addedRepositories[0])
+        }
       } else {
+        // Not a Git repository yet — keep the dialog so it can be initialized.
         await this.showPopup({ type: PopupType.AddRepository, path })
       }
     }

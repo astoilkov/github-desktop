@@ -1,0 +1,139 @@
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index 99856a4ff0..eea67dd763 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -1191,21 +1191,31 @@ export class App extends React.Component<IAppProps, IAppState> {
+       // user may accidentally provide a folder within the repository
+       // this ensures we use the repository root, if it is actually a repository
+       // otherwise we consider it an untracked repository
+-      const path = await getRepositoryType(paths[0])
+-        .then(t =>
+-          t.kind === 'regular' ? t.topLevelWorkingDirectory : paths[0]
+-        )
+-        .catch(e => {
+-          log.error('Could not determine repository type', e)
+-          return paths[0]
+-        })
++      const repositoryType = await getRepositoryType(paths[0]).catch(e => {
++        log.error('Could not determine repository type', e)
++        return { kind: 'missing' } as const
++      })
++      const path =
++        repositoryType.kind === 'regular'
++          ? repositoryType.topLevelWorkingDirectory
++          : paths[0]
+ 
+       const { repositories } = this.state
+       const existingRepository = matchExistingRepository(repositories, path)
+ 
+       if (existingRepository) {
+         await dispatcher.selectRepository(existingRepository)
++      } else if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await dispatcher.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          dispatcher.recordAddExistingRepository()
++          await dispatcher.selectRepository(addedRepositories[0])
++        }
+       } else {
++        // Not a Git repository yet — keep the dialog so it can be initialized.
+         await this.showPopup({ type: PopupType.AddRepository, path })
+       }
+     }
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 9e8fa8f686..821d54d9b0 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -1829,14 +1829,14 @@ export class Dispatcher {
+   ) {
+     const requestedPath = action.path
+ 
+-    const path = await getRepositoryType(requestedPath)
+-      .then(t =>
+-        t.kind === 'regular' ? t.topLevelWorkingDirectory : requestedPath
+-      )
+-      .catch(e => {
+-        log.error('Could not determine repository type', e)
+-        return requestedPath
+-      })
++    const repositoryType = await getRepositoryType(requestedPath).catch(e => {
++      log.error('Could not determine repository type', e)
++      return { kind: 'missing' } as const
++    })
++    const path =
++      repositoryType.kind === 'regular'
++        ? repositoryType.topLevelWorkingDirectory
++        : requestedPath
+ 
+     const { repositories } = this.appStore.getState()
+     const existingRepository = matchExistingRepository(repositories, path)
+@@ -1844,11 +1844,22 @@ export class Dispatcher {
+     if (existingRepository) {
+       await this.selectRepository(existingRepository)
+     } else if (!action.openInBackground) {
+-      // Only prompt the user to add an unknown repo when the URL asked to
+-      // foreground the app. Silent activations should stay silent — they're
+-      // sent by tooling on every workspace switch, and a popup on each one
+-      // would be hostile.
+-      await this.showPopup({ type: PopupType.AddRepository, path })
++      // Only act on an unknown repo when the URL asked to foreground the app.
++      // Silent activations should stay silent — they're sent by tooling on
++      // every workspace switch, and acting on each one would be hostile.
++      if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await this.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          this.recordAddExistingRepository()
++          await this.selectRepository(addedRepositories[0])
++        }
++      } else {
++        // Not a Git repository yet — keep the dialog so it can be initialized.
++        await this.showPopup({ type: PopupType.AddRepository, path })
++      }
+     }
+   }
+ 
+@@ -1975,21 +1986,31 @@ export class Dispatcher {
+       // user may accidentally provide a folder within the repository
+       // this ensures we use the repository root, if it is actually a repository
+       // otherwise we consider it an untracked repository
+-      const path = await getRepositoryType(action.path)
+-        .then(t =>
+-          t.kind === 'regular' ? t.topLevelWorkingDirectory : action.path
+-        )
+-        .catch(e => {
+-          log.error('Could not determine repository type', e)
+-          return action.path
+-        })
++      const repositoryType = await getRepositoryType(action.path).catch(e => {
++        log.error('Could not determine repository type', e)
++        return { kind: 'missing' } as const
++      })
++      const path =
++        repositoryType.kind === 'regular'
++          ? repositoryType.topLevelWorkingDirectory
++          : action.path
+ 
+       const { repositories } = this.appStore.getState()
+       const existingRepository = matchExistingRepository(repositories, path)
+ 
+       if (existingRepository) {
+         await this.selectRepository(existingRepository)
++      } else if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await this.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          this.recordAddExistingRepository()
++          await this.selectRepository(addedRepositories[0])
++        }
+       } else {
++        // Not a Git repository yet — keep the dialog so it can be initialized.
+         await this.showPopup({ type: PopupType.AddRepository, path })
+       }
+     }
