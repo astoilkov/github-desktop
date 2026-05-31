@@ -1,0 +1,231 @@
+diff --git a/app/app-info.ts b/app/app-info.ts
+index ec49654d49..8521a600ab 100644
+--- a/app/app-info.ts
++++ b/app/app-info.ts
+@@ -26,6 +26,7 @@ export function getReplacements() {
+     __DEV_SECRETS__: isDevBuild || !process.env.DESKTOP_OAUTH_CLIENT_SECRET,
+     __RELEASE_CHANNEL__: s(channel),
+     __UPDATES_URL__: s(process.env.DESKTOP_E2E_UPDATES_URL ?? getUpdatesURL()),
++    __SKIP_UPDATE_CHECK__: process.env.DESKTOP_SKIP_UPDATE_CHECK === '1',
+     __SHA__: s(getSHA()),
+     'process.platform': s(process.platform),
+     'process.env.NODE_ENV': s(process.env.NODE_ENV || 'development'),
+diff --git a/app/src/lib/globals.d.ts b/app/src/lib/globals.d.ts
+index b6bc8193ec..241cde9c24 100644
+--- a/app/src/lib/globals.d.ts
++++ b/app/src/lib/globals.d.ts
+@@ -50,6 +50,13 @@ declare const __RELEASE_CHANNEL__:
+ /** The URL for Squirrel's updates. */
+ declare const __UPDATES_URL__: string
+ 
++/**
++ * Whether to skip checking for (and installing) updates entirely. Set for
++ * locally-deployed builds (see `yarn deploy:local`) so an upstream release
++ * can't silently overwrite them.
++ */
++declare const __SKIP_UPDATE_CHECK__: boolean
++
+ /**
+  * The currently executing process kind, this is specific to desktop
+  * and identifies the processes that we have.
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index f2121de422..99856a4ff0 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -626,6 +626,12 @@ export class App extends React.Component<IAppProps, IAppState> {
+       return
+     }
+ 
++    // Locally-deployed builds (`yarn deploy:local`) opt out of updates so an
++    // upstream release can't silently overwrite them.
++    if (__SKIP_UPDATE_CHECK__) {
++      return
++    }
++
+     if (isWindowsAndNoLongerSupportedByElectron()) {
+       log.error(
+         `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
+diff --git a/package.json b/package.json
+index 2e5903ca7c..013c55abac 100644
+--- a/package.json
++++ b/package.json
+@@ -28,6 +28,7 @@
+     "compile:prod": "cross-env NODE_ENV=production TS_NODE_PROJECT=script/tsconfig.json NODE_OPTIONS='--max_old_space_size=4096' webpack --config app/webpack.production.ts",
+     "build:dev": "yarn compile:dev && cross-env NODE_ENV=development ts-node -P script/tsconfig.json script/build.ts",
+     "build:prod": "yarn compile:prod && cross-env NODE_ENV=production ts-node -P script/tsconfig.json script/build.ts",
++    "deploy:local": "cross-env NODE_ENV=production ts-node -P script/tsconfig.json script/deploy-local.ts",
+     "package": "ts-node -P script/tsconfig.json script/package.ts",
+     "generate-octicons": "ts-node -P script/tsconfig.json script/generate-octicons.ts",
+     "compile:script": "tsc -P script/tsconfig.json",
+diff --git a/script/build.ts b/script/build.ts
+index 234ccf3b81..a3214f774c 100755
+--- a/script/build.ts
++++ b/script/build.ts
+@@ -64,6 +64,14 @@ const projectRoot = path.join(__dirname, '..')
+ const entitlementsSuffix = isDevelopmentBuild ? '-dev' : ''
+ const entitlementsPath = `${projectRoot}/script/entitlements${entitlementsSuffix}.plist`
+ const extendInfoPath = `${projectRoot}/script/info.plist`
++
++// When set (see `yarn deploy:local`), sign the macOS app with a local
++// self-signed certificate of this name instead of the regular
++// development/distribution identities. This needs the
++// disable-library-validation entitlement so the (team-id-less) self-signed
++// Electron Framework can be loaded under the hardened runtime.
++const localSignIdentity = process.env.DESKTOP_LOCAL_SIGN_IDENTITY
++const localEntitlementsPath = `${projectRoot}/script/entitlements-local.plist`
+ const outRoot = path.join(projectRoot, 'out')
+ 
+ console.log(`Building for ${getChannel()}…`)
+@@ -206,15 +214,16 @@ function packageApp() {
+     osxSign: {
+       optionsForFile: (path: string) => ({
+         hardenedRuntime: true,
+-        entitlements: entitlementsPath,
++        entitlements: localSignIdentity ? localEntitlementsPath : entitlementsPath,
+       }),
+-      type: isPublishableBuild ? 'distribution' : 'development',
++      type:
++        localSignIdentity || !isPublishableBuild ? 'development' : 'distribution',
+       // For development, we will use '-' as the identifier so that codesign
+       // will sign the app to run locally. We need to disable 'identity-validation'
+       // or otherwise it will replace '-' with one of the regular codesigning
+       // identities in our system.
+-      identity: isDevelopmentBuild ? '-' : undefined,
+-      identityValidation: !isDevelopmentBuild,
++      identity: localSignIdentity ?? (isDevelopmentBuild ? '-' : undefined),
++      identityValidation: localSignIdentity ? false : !isDevelopmentBuild,
+     },
+     osxNotarize,
+     protocols: [
+diff --git a/script/deploy-local.ts b/script/deploy-local.ts
+new file mode 100644
+index 0000000000..a0b3edd3d5
+--- /dev/null
++++ b/script/deploy-local.ts
+@@ -0,0 +1,101 @@
++/* eslint-disable no-sync */
++
++import * as cp from 'child_process'
++import { existsSync, rmSync } from 'fs'
++import { join } from 'path'
++import { getProductName } from '../app/package-info'
++import { getDistPath } from './dist-info'
++
++// Name of the self-signed code-signing certificate to sign with. Create one
++// via Keychain Access → Certificate Assistant → Create a Certificate
++// (type: "Code Signing"), then mark it trusted for code signing.
++const signIdentity = process.env.DESKTOP_LOCAL_SIGN_IDENTITY ?? 'Local Electron Dev'
++
++const applicationsDir = '/Applications'
++
++deployLocal()
++
++// Builds a production-named GitHub Desktop signed with a local self-signed
++// certificate, then swaps it into /Applications and relaunches it. This gives a
++// locally-built app a *stable* code-signing identity (unlike ad-hoc `-` signing,
++// whose hash changes every build), so macOS keychain/permission grants persist
++// across rebuilds.
++function deployLocal() {
++  if (process.platform !== 'darwin') {
++    throw new Error('deploy:local is only supported on macOS.')
++  }
++
++  assertSigningIdentityExists()
++
++  console.log(`Building a production app signed with "${signIdentity}"…`)
++  cp.execSync('yarn build:prod', {
++    stdio: 'inherit',
++    env: {
++      ...process.env,
++      NODE_ENV: 'production',
++      DESKTOP_LOCAL_SIGN_IDENTITY: signIdentity,
++      // Don't let the app auto-update from upstream and overwrite this local
++      // build (it's a production-channel app with an older version number, so
++      // the update feed would otherwise replace it).
++      DESKTOP_SKIP_UPDATE_CHECK: '1',
++    },
++  })
++
++  const productName = getProductName()
++  const builtApp = join(getDistPath(), `${productName}.app`)
++  if (!existsSync(builtApp)) {
++    throw new Error(`Expected the built app at ${builtApp}, but it wasn't there.`)
++  }
++
++  const destination = join(applicationsDir, `${productName}.app`)
++
++  console.log(`Quitting any running copy of "${productName}"…`)
++  quitApp(productName)
++
++  console.log(`Replacing ${destination}…`)
++  rmSync(destination, { recursive: true, force: true })
++  cp.execSync(`ditto "${builtApp}" "${destination}"`)
++
++  console.log('Verifying the deployed signature…')
++  cp.execSync(`codesign --verify --deep --strict "${destination}"`)
++
++  console.log('Relaunching…')
++  cp.execSync(`open "${destination}"`)
++
++  console.log(`\nDeployed ${productName} to ${destination}.`)
++}
++
++function assertSigningIdentityExists() {
++  const identities = cp.execSync('security find-identity -v -p codesigning', {
++    encoding: 'utf8',
++  })
++
++  if (!identities.includes(signIdentity)) {
++    throw new Error(
++      `Couldn't find a code-signing identity named "${signIdentity}" in your keychain.\n` +
++        `Create a self-signed certificate with that name (Keychain Access →\n` +
++        `Certificate Assistant → Create a Certificate…, type "Code Signing"), mark it\n` +
++        `trusted for code signing, then run this again. Override the name with the\n` +
++        `DESKTOP_LOCAL_SIGN_IDENTITY environment variable.`
++    )
++  }
++}
++
++function quitApp(productName: string) {
++  try {
++    cp.execSync(`osascript -e 'quit app "${productName}"'`, { stdio: 'ignore' })
++  } catch {
++    // Not running (or AppleScript declined) — nothing to quit.
++  }
++
++  // Wait for the process to actually exit before we overwrite it on disk.
++  const mainProcess = `/${productName}.app/Contents/MacOS/${productName}`
++  for (let i = 0; i < 20; i++) {
++    try {
++      cp.execSync(`pgrep -f "${mainProcess}"`, { stdio: 'ignore' })
++    } catch {
++      return // pgrep exits non-zero when there's no match → fully quit.
++    }
++    cp.execSync('sleep 0.5')
++  }
++}
+diff --git a/script/entitlements-local.plist b/script/entitlements-local.plist
+new file mode 100644
+index 0000000000..80d1a9e584
+--- /dev/null
++++ b/script/entitlements-local.plist
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++  <dict>
++    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
++    <true/>
++    <key>com.apple.security.automation.apple-events</key>
++    <true/>
++    <key>com.apple.security.cs.allow-jit</key>
++    <true/>
++    <!--
++      Required for a self-signed (team-id-less) certificate: without this the
++      hardened runtime's library validation refuses to load the Electron
++      Framework into the signed main/helper processes ("different Team IDs").
++    -->
++    <key>com.apple.security.cs.disable-library-validation</key>
++    <true/>
++  </dict>
++</plist>

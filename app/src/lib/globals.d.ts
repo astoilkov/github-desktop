@@ -57,6 +57,13 @@ declare const __ERROR_REPORTING_ENDPOINT__: string | undefined
 declare const __NON_FATAL_ERROR_REPORTING_ENDPOINT__: string | undefined
 
 /**
+ * Whether to skip checking for (and installing) updates entirely. Set for
+ * locally-deployed builds (see `yarn deploy:local`) so an upstream release
+ * can't silently overwrite them.
+ */
+declare const __SKIP_UPDATE_CHECK__: boolean
+
+/**
  * The currently executing process kind, this is specific to desktop
  * and identifies the processes that we have.
  */

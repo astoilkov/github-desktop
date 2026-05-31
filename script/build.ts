@@ -63,6 +63,14 @@ const projectRoot = path.join(__dirname, '..')
 const entitlementsSuffix = isDevelopmentBuild ? '-dev' : ''
 const entitlementsPath = `${projectRoot}/script/entitlements${entitlementsSuffix}.plist`
 const extendInfoPath = `${projectRoot}/script/info.plist`
+
+// When set (see `yarn deploy:local`), sign the macOS app with a local
+// self-signed certificate of this name instead of the regular
+// development/distribution identities. This needs the
+// disable-library-validation entitlement so the (team-id-less) self-signed
+// Electron Framework can be loaded under the hardened runtime.
+const localSignIdentity = process.env.DESKTOP_LOCAL_SIGN_IDENTITY
+const localEntitlementsPath = `${projectRoot}/script/entitlements-local.plist`
 const outRoot = path.join(projectRoot, 'out')
 
 console.log(`Building for ${getChannel()}…`)
@@ -205,15 +213,16 @@ function packageApp() {
     osxSign: {
       optionsForFile: (path: string) => ({
         hardenedRuntime: true,
-        entitlements: entitlementsPath,
+        entitlements: localSignIdentity ? localEntitlementsPath : entitlementsPath,
       }),
-      type: isPublishableBuild ? 'distribution' : 'development',
+      type:
+        localSignIdentity || !isPublishableBuild ? 'development' : 'distribution',
       // For development, we will use '-' as the identifier so that codesign
       // will sign the app to run locally. We need to disable 'identity-validation'
       // or otherwise it will replace '-' with one of the regular codesigning
       // identities in our system.
-      identity: isDevelopmentBuild ? '-' : undefined,
-      identityValidation: !isDevelopmentBuild,
+      identity: localSignIdentity ?? (isDevelopmentBuild ? '-' : undefined),
+      identityValidation: localSignIdentity ? false : !isDevelopmentBuild,
     },
     osxNotarize,
     protocols: [

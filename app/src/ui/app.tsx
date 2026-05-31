@@ -642,6 +642,12 @@ export class App extends React.Component<IAppProps, IAppState> {
       return
     }
 
+    // Locally-deployed builds (`yarn deploy:local`) opt out of updates so an
+    // upstream release can't silently overwrite them.
+    if (__SKIP_UPDATE_CHECK__) {
+      return
+    }
+
     if (isWindowsAndNoLongerSupportedByElectron()) {
       log.error(
         `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
