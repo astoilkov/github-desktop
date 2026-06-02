@@ -51,9 +51,12 @@ Before doing anything, verify and stop with a clear message if any fails:
    `git merge <release-tag> --no-ff -m "Sync with <release-tag>"`.
    Because the target is a tag rather than the branch tip, commits upstream has
    made after that release are intentionally left out. If merge conflicts occur,
-   resolve them by reading the conflicting hunks together with any
-   `fork/patches/*.md` whose `Touched files` overlap. If the right resolution
-   isn't clear, ask the user before picking a side.
+   resolve them using the conflict-resolution methodology in the
+   `/git-rebase-autofix` command (its **Context Gathering** and **Resolution
+   Strategy** sections — gather full context from both sides, preserve the intent
+   of each, don't blindly pick a side), reading the conflicting hunks together
+   with any `fork/patches/*.md` whose `Touched files` overlap. If the right
+   resolution isn't clear, ask the user before picking a side.
 
 6. For each `fork/patches/NNN-*.patch` in numeric order, decide its state:
 
@@ -64,9 +67,14 @@ Before doing anything, verify and stop with a clear message if any fails:
      → **applies cleanly**. Run `git apply fork/patches/NNN-*.patch` and
      stage the result.
 
-   - Both checks fail → **drifted**. Read the matching `NNN-*.md`, locate
-     the symbols / anchors named in its `Touched files` and `Change summary`
-     sections in the current codebase, and re-implement the change there
+   - Both checks fail → **drifted** (the patch conflicts with the synced code).
+     Resolve it using the conflict-resolution methodology in the
+     `/git-rebase-autofix` command (its **Context Gathering** and **Resolution
+     Strategy** sections): understand the semantic intent of both the patch and
+     the upstream change before reconciling them, and preserve improvements from
+     both sides rather than picking one. Concretely: read the matching `NNN-*.md`,
+     locate the symbols / anchors named in its `Touched files` and `Change
+     summary` sections in the current codebase, and re-implement the change there
      (the `.md` is the source of truth, not the `.patch`). Then regenerate
      the patch from the new diff so the next sync starts from a clean
      baseline:
