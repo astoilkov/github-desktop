@@ -14,18 +14,21 @@ Patches are numbered in the order they were introduced.
 ## Workflow
 
 When upstream releases new commits, sync the fork like this (the `/sync-fork`
-slash command automates it):
+slash command automates it). The fork is **rebased** onto the latest release
+tag, so your commits stay on top and upstream history sits below — your real
+commits are the patches, so the rebase replays them directly:
 
-1. `git fetch upstream`
-2. Merge or rebase `upstream/development` into the fork branch.
-3. For each patch in this folder, in numeric order:
-   - Try `git apply --check fork/patches/NNN-*.patch`.
-   - If it applies cleanly, `git apply` it and stage the changes.
-   - If it fails, open the matching `NNN-*.md`, locate the anchors it names
-     in the current codebase, and re-implement the intent. Then regenerate
-     the `.patch` so the next sync starts from a clean baseline.
-4. Run typecheck / lint / the smoke test described in each patch's `.md`.
-5. Commit, push to `origin`.
+1. `git fetch upstream --tags`.
+2. Pick the latest stable `release-X.Y.Z` tag.
+3. `git rebase <release-tag>` to replay the fork's own commits on top.
+   - If a commit conflicts, open the matching `NNN-*.md` (match the conflicting
+     files against its **Touched files**), re-implement the intent against the
+     new upstream code, stage it, and `git rebase --continue`. The `.md` is the
+     source of truth, not the on-disk `.patch`.
+4. Regenerate each `NNN-*.patch` from its touched files against the release tag
+   so the recorded diffs stay current.
+5. Run typecheck / lint / the smoke test described in each patch's `.md`.
+6. Force-push to `origin` with `--force-with-lease` (the rebase rewrote history).
 
 ## Adding a new patch
 
