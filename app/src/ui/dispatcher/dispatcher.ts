@@ -1957,23 +1957,22 @@ export class Dispatcher {
 
     if (existingRepository) {
       await this.selectRepository(existingRepository)
-    } else if (!action.openInBackground) {
-      // Only act on an unknown repo when the URL asked to foreground the app.
-      // Silent activations should stay silent — they're sent by tooling on
-      // every workspace switch, and acting on each one would be hostile.
-      if (repositoryType.kind === 'regular') {
-        // It's already a valid Git repository, so add and open it directly
-        // instead of bouncing through the Add Local Repository dialog.
-        const addedRepositories = await this.addRepositories([path])
+    } else if (repositoryType.kind === 'regular') {
+      // It's already a valid Git repository, so add and open it directly
+      // instead of bouncing through the Add Local Repository dialog. This is
+      // safe even for silent (background) activations since it surfaces no UI.
+      const addedRepositories = await this.addRepositories([path])
 
-        if (addedRepositories.length > 0) {
-          this.recordAddExistingRepository()
-          await this.selectRepository(addedRepositories[0])
-        }
-      } else {
-        // Not a Git repository yet — keep the dialog so it can be initialized.
-        await this.showPopup({ type: PopupType.AddRepository, path })
+      if (addedRepositories.length > 0) {
+        this.recordAddExistingRepository()
+        await this.selectRepository(addedRepositories[0])
       }
+    } else if (!action.openInBackground) {
+      // Not a Git repository yet — keep the dialog so it can be initialized,
+      // but only when the URL asked to foreground the app. Silent activations
+      // should stay silent rather than popping a dialog on every workspace
+      // switch, which would be hostile.
+      await this.showPopup({ type: PopupType.AddRepository, path })
     }
   }
 
