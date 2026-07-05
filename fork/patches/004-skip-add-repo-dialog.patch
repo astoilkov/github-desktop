@@ -1,8 +1,21 @@
 diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
-index 99856a4ff0..eea67dd763 100644
+index 8d516584b0..dfde19b6de 100644
 --- a/app/src/ui/app.tsx
 +++ b/app/src/ui/app.tsx
-@@ -1191,21 +1191,31 @@ export class App extends React.Component<IAppProps, IAppState> {
+@@ -642,6 +642,12 @@ export class App extends React.Component<IAppProps, IAppState> {
+       return
+     }
+ 
++    // Locally-deployed builds (`yarn deploy:local`) opt out of updates so an
++    // upstream release can't silently overwrite them.
++    if (__SKIP_UPDATE_CHECK__) {
++      return
++    }
++
+     if (isWindowsAndNoLongerSupportedByElectron()) {
+       log.error(
+         `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
+@@ -1237,21 +1243,31 @@ export class App extends React.Component<IAppProps, IAppState> {
        // user may accidentally provide a folder within the repository
        // this ensures we use the repository root, if it is actually a repository
        // otherwise we consider it an untracked repository
@@ -42,22 +55,36 @@ index 99856a4ff0..eea67dd763 100644
          await this.showPopup({ type: PopupType.AddRepository, path })
        }
      }
+@@ -3341,7 +3357,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+     if (repository) {
+       const alias = repository instanceof Repository ? repository.alias : null
+       icon = iconForRepository(repository)
+-      title = alias ?? repository.name
++      title = alias ?? Path.basename(repository.path)
+     } else if (this.state.repositories.length > 0) {
+       icon = octicons.repo
+       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
 diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
-index 9e8fa8f686..821d54d9b0 100644
+index 9fcc4693a2..b3966684b0 100644
 --- a/app/src/ui/dispatcher/dispatcher.ts
 +++ b/app/src/ui/dispatcher/dispatcher.ts
-@@ -1829,14 +1829,14 @@ export class Dispatcher {
-   ) {
-     const requestedPath = action.path
+@@ -40,6 +40,7 @@ import {
+ } from '../../lib/git'
+ import { isGitOnPath } from '../../lib/is-git-on-path'
+ import {
++  IOpenLocalRepositoryFromURLAction,
+   IOpenRepositoryFromURLAction,
+   IUnknownAction,
+   URLActionType,
+@@ -1937,6 +1938,44 @@ export class Dispatcher {
+     return false
+   }
  
--    const path = await getRepositoryType(requestedPath)
--      .then(t =>
--        t.kind === 'regular' ? t.topLevelWorkingDirectory : requestedPath
--      )
--      .catch(e => {
--        log.error('Could not determine repository type', e)
--        return requestedPath
--      })
++  private async openLocalRepositoryFromUrl(
++    action: IOpenLocalRepositoryFromURLAction
++  ) {
++    const requestedPath = action.path
++
 +    const repositoryType = await getRepositoryType(requestedPath).catch(e => {
 +      log.error('Could not determine repository type', e)
 +      return { kind: 'missing' } as const
@@ -66,38 +93,35 @@ index 9e8fa8f686..821d54d9b0 100644
 +      repositoryType.kind === 'regular'
 +        ? repositoryType.topLevelWorkingDirectory
 +        : requestedPath
- 
-     const { repositories } = this.appStore.getState()
-     const existingRepository = matchExistingRepository(repositories, path)
-@@ -1844,11 +1844,22 @@ export class Dispatcher {
-     if (existingRepository) {
-       await this.selectRepository(existingRepository)
-     } else if (!action.openInBackground) {
--      // Only prompt the user to add an unknown repo when the URL asked to
--      // foreground the app. Silent activations should stay silent — they're
--      // sent by tooling on every workspace switch, and a popup on each one
--      // would be hostile.
--      await this.showPopup({ type: PopupType.AddRepository, path })
-+      // Only act on an unknown repo when the URL asked to foreground the app.
-+      // Silent activations should stay silent — they're sent by tooling on
-+      // every workspace switch, and acting on each one would be hostile.
-+      if (repositoryType.kind === 'regular') {
-+        // It's already a valid Git repository, so add and open it directly
-+        // instead of bouncing through the Add Local Repository dialog.
-+        const addedRepositories = await this.addRepositories([path])
 +
-+        if (addedRepositories.length > 0) {
-+          this.recordAddExistingRepository()
-+          await this.selectRepository(addedRepositories[0])
-+        }
-+      } else {
-+        // Not a Git repository yet — keep the dialog so it can be initialized.
-+        await this.showPopup({ type: PopupType.AddRepository, path })
++    const { repositories } = this.appStore.getState()
++    const existingRepository = matchExistingRepository(repositories, path)
++
++    if (existingRepository) {
++      await this.selectRepository(existingRepository)
++    } else if (repositoryType.kind === 'regular') {
++      // It's already a valid Git repository, so add and open it directly
++      // instead of bouncing through the Add Local Repository dialog. This is
++      // safe even for silent (background) activations since it surfaces no UI.
++      const addedRepositories = await this.addRepositories([path])
++
++      if (addedRepositories.length > 0) {
++        this.recordAddExistingRepository()
++        await this.selectRepository(addedRepositories[0])
 +      }
-     }
-   }
++    } else if (!action.openInBackground) {
++      // Not a Git repository yet — keep the dialog so it can be initialized,
++      // but only when the URL asked to foreground the app. Silent activations
++      // should stay silent rather than popping a dialog on every workspace
++      // switch, which would be hostile.
++      await this.showPopup({ type: PopupType.AddRepository, path })
++    }
++  }
++
+   private async openRepositoryFromUrl(action: IOpenRepositoryFromURLAction) {
+     const { url, pr, branch, filepath } = action
  
-@@ -1975,21 +1986,31 @@ export class Dispatcher {
+@@ -2060,14 +2099,14 @@ export class Dispatcher {
        // user may accidentally provide a folder within the repository
        // this ensures we use the repository root, if it is actually a repository
        // otherwise we consider it an untracked repository
@@ -120,10 +144,11 @@ index 9e8fa8f686..821d54d9b0 100644
  
        const { repositories } = this.appStore.getState()
        const existingRepository = matchExistingRepository(repositories, path)
+@@ -2093,6 +2132,19 @@ export class Dispatcher {
+         return
+       }
  
-       if (existingRepository) {
-         await this.selectRepository(existingRepository)
-+      } else if (repositoryType.kind === 'regular') {
++      if (repositoryType.kind === 'regular') {
 +        // It's already a valid Git repository, so add and open it directly
 +        // instead of bouncing through the Add Local Repository dialog.
 +        const addedRepositories = await this.addRepositories([path])
@@ -132,8 +157,21 @@ index 9e8fa8f686..821d54d9b0 100644
 +          this.recordAddExistingRepository()
 +          await this.selectRepository(addedRepositories[0])
 +        }
-       } else {
-+        // Not a Git repository yet — keep the dialog so it can be initialized.
-         await this.showPopup({ type: PopupType.AddRepository, path })
-       }
++        return
++      }
++
++      // Not a Git repository yet — keep the dialog so it can be initialized.
+       await this.showPopup({ type: PopupType.AddRepository, path })
      }
+   }
+@@ -2119,6 +2171,10 @@ export class Dispatcher {
+         this.openRepositoryFromUrl(action)
+         break
+ 
++      case 'open-local-repository-from-url':
++        this.openLocalRepositoryFromUrl(action)
++        break
++
+       default:
+         const unknownAction: IUnknownAction = action
+         log.warn(

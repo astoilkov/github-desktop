@@ -1,8 +1,61 @@
 diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
-index 7e42d873ec..f2121de422 100644
+index 8d516584b0..dfde19b6de 100644
 --- a/app/src/ui/app.tsx
 +++ b/app/src/ui/app.tsx
-@@ -3102,7 +3102,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+@@ -642,6 +642,12 @@ export class App extends React.Component<IAppProps, IAppState> {
+       return
+     }
+ 
++    // Locally-deployed builds (`yarn deploy:local`) opt out of updates so an
++    // upstream release can't silently overwrite them.
++    if (__SKIP_UPDATE_CHECK__) {
++      return
++    }
++
+     if (isWindowsAndNoLongerSupportedByElectron()) {
+       log.error(
+         `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
+@@ -1237,21 +1243,31 @@ export class App extends React.Component<IAppProps, IAppState> {
+       // user may accidentally provide a folder within the repository
+       // this ensures we use the repository root, if it is actually a repository
+       // otherwise we consider it an untracked repository
+-      const path = await getRepositoryType(paths[0])
+-        .then(t =>
+-          t.kind === 'regular' ? t.topLevelWorkingDirectory : paths[0]
+-        )
+-        .catch(e => {
+-          log.error('Could not determine repository type', e)
+-          return paths[0]
+-        })
++      const repositoryType = await getRepositoryType(paths[0]).catch(e => {
++        log.error('Could not determine repository type', e)
++        return { kind: 'missing' } as const
++      })
++      const path =
++        repositoryType.kind === 'regular'
++          ? repositoryType.topLevelWorkingDirectory
++          : paths[0]
+ 
+       const { repositories } = this.state
+       const existingRepository = matchExistingRepository(repositories, path)
+ 
+       if (existingRepository) {
+         await dispatcher.selectRepository(existingRepository)
++      } else if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await dispatcher.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          dispatcher.recordAddExistingRepository()
++          await dispatcher.selectRepository(addedRepositories[0])
++        }
+       } else {
++        // Not a Git repository yet — keep the dialog so it can be initialized.
+         await this.showPopup({ type: PopupType.AddRepository, path })
+       }
+     }
+@@ -3341,7 +3357,7 @@ export class App extends React.Component<IAppProps, IAppState> {
      if (repository) {
        const alias = repository instanceof Repository ? repository.alias : null
        icon = iconForRepository(repository)

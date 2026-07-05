@@ -29,10 +29,10 @@ index b6bc8193ec..241cde9c24 100644
   * The currently executing process kind, this is specific to desktop
   * and identifies the processes that we have.
 diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
-index f2121de422..99856a4ff0 100644
+index 8d516584b0..dfde19b6de 100644
 --- a/app/src/ui/app.tsx
 +++ b/app/src/ui/app.tsx
-@@ -626,6 +626,12 @@ export class App extends React.Component<IAppProps, IAppState> {
+@@ -642,6 +642,12 @@ export class App extends React.Component<IAppProps, IAppState> {
        return
      }
  
@@ -45,8 +45,57 @@ index f2121de422..99856a4ff0 100644
      if (isWindowsAndNoLongerSupportedByElectron()) {
        log.error(
          `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
+@@ -1237,21 +1243,31 @@ export class App extends React.Component<IAppProps, IAppState> {
+       // user may accidentally provide a folder within the repository
+       // this ensures we use the repository root, if it is actually a repository
+       // otherwise we consider it an untracked repository
+-      const path = await getRepositoryType(paths[0])
+-        .then(t =>
+-          t.kind === 'regular' ? t.topLevelWorkingDirectory : paths[0]
+-        )
+-        .catch(e => {
+-          log.error('Could not determine repository type', e)
+-          return paths[0]
+-        })
++      const repositoryType = await getRepositoryType(paths[0]).catch(e => {
++        log.error('Could not determine repository type', e)
++        return { kind: 'missing' } as const
++      })
++      const path =
++        repositoryType.kind === 'regular'
++          ? repositoryType.topLevelWorkingDirectory
++          : paths[0]
+ 
+       const { repositories } = this.state
+       const existingRepository = matchExistingRepository(repositories, path)
+ 
+       if (existingRepository) {
+         await dispatcher.selectRepository(existingRepository)
++      } else if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await dispatcher.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          dispatcher.recordAddExistingRepository()
++          await dispatcher.selectRepository(addedRepositories[0])
++        }
+       } else {
++        // Not a Git repository yet — keep the dialog so it can be initialized.
+         await this.showPopup({ type: PopupType.AddRepository, path })
+       }
+     }
+@@ -3341,7 +3357,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+     if (repository) {
+       const alias = repository instanceof Repository ? repository.alias : null
+       icon = iconForRepository(repository)
+-      title = alias ?? repository.name
++      title = alias ?? Path.basename(repository.path)
+     } else if (this.state.repositories.length > 0) {
+       icon = octicons.repo
+       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
 diff --git a/package.json b/package.json
-index 2e5903ca7c..013c55abac 100644
+index 3a46319b17..1c0d66f8ad 100644
 --- a/package.json
 +++ b/package.json
 @@ -28,6 +28,7 @@
@@ -58,10 +107,10 @@ index 2e5903ca7c..013c55abac 100644
      "generate-octicons": "ts-node -P script/tsconfig.json script/generate-octicons.ts",
      "compile:script": "tsc -P script/tsconfig.json",
 diff --git a/script/build.ts b/script/build.ts
-index 234ccf3b81..a3214f774c 100755
+index ee3102dbef..b5ec4c0c45 100755
 --- a/script/build.ts
 +++ b/script/build.ts
-@@ -64,6 +64,14 @@ const projectRoot = path.join(__dirname, '..')
+@@ -63,6 +63,14 @@ const projectRoot = path.join(__dirname, '..')
  const entitlementsSuffix = isDevelopmentBuild ? '-dev' : ''
  const entitlementsPath = `${projectRoot}/script/entitlements${entitlementsSuffix}.plist`
  const extendInfoPath = `${projectRoot}/script/info.plist`
@@ -76,7 +125,7 @@ index 234ccf3b81..a3214f774c 100755
  const outRoot = path.join(projectRoot, 'out')
  
  console.log(`Building for ${getChannel()}…`)
-@@ -206,15 +214,16 @@ function packageApp() {
+@@ -205,15 +213,16 @@ function packageApp() {
      osxSign: {
        optionsForFile: (path: string) => ({
          hardenedRuntime: true,
