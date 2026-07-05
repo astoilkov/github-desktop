@@ -13,7 +13,9 @@ work-in-progress.
 
 After the rebase, the `fork/patches/NNN-*.patch` files are regenerated from the
 new baseline so the recorded diffs stay current (the matching `.md` remains the
-source of truth for intent and is what guides conflict resolution).
+source of truth for intent and is what guides conflict resolution), and
+`yarn install` is run so the installed dependencies match the new release's
+`package.json` / `yarn.lock`.
 
 > **History is rewritten.** A rebase gives the replayed commits new hashes, so
 > after this runs your local branch and `origin` will have diverged. Pushing
@@ -122,7 +124,18 @@ Before doing anything, verify and stop with a clear message if any fails:
    `Refresh fork patches after syncing <release-tag>`.
    If none changed, skip this commit.
 
-9. **Do not push.** Print:
+9. **Install dependencies.** The new release baseline may have moved
+   `package.json` / `yarn.lock`, so refresh the installed modules:
+
+   ```sh
+   yarn install
+   ```
+
+   This is a working-tree operation only — it does not create a commit
+   (`yarn.lock` is already part of the rebased history). Report whether it
+   succeeded and surface any errors so the user knows the tree is buildable.
+
+10. **Do not push.** Print:
    - The release version/tag rebased onto.
    - The old HEAD sha and the backup branch name (and how to recover:
      `git rebase --abort` mid-rebase, or `git reset --hard <backup>` after).
