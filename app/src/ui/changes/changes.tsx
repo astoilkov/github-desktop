@@ -129,6 +129,7 @@ export class Changes extends React.Component<IChangesProps, {}> {
           }
           onOpenBinaryFile={this.props.onOpenBinaryFile}
           onOpenSubmodule={this.props.onOpenSubmodule}
+          onOpenInExternalEditor={this.onOpenInExternalEditor}
           onChangeImageDiffType={this.props.onChangeImageDiffType}
           onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
         />
@@ -138,6 +139,10 @@ export class Changes extends React.Component<IChangesProps, {}> {
 
   private onShowSideBySideDiffChanged = (showSideBySideDiff: boolean) => {
     this.props.dispatcher.onShowSideBySideDiffChanged(showSideBySideDiff)
+  }
+
+  private onOpenInExternalEditor = (fullPath: string, lineNumber: number) => {
+    this.props.dispatcher.openInExternalEditor(fullPath, lineNumber)
   }
 
   private onHideWhitespaceInDiffChanged = (hideWhitespaceInDiff: boolean) => {

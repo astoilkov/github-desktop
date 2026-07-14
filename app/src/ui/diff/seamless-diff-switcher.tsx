@@ -90,6 +90,17 @@ interface ISeamlessDiffSwitcherProps {
   readonly onOpenSubmodule?: (fullPath: string) => void
 
   /**
+   * Called when the user cmd/ctrl-clicks a diff line to open it in their
+   * external editor at the given line number.
+   */
+  // Used in getDerivedStateFromProps, no-unused-prop-types doesn't know that
+  // eslint-disable-next-line react/no-unused-prop-types
+  readonly onOpenInExternalEditor?: (
+    fullPath: string,
+    lineNumber: number
+  ) => void
+
+  /**
    * Called when the user is viewing an image diff and requests
    * to change the diff presentation mode.
    */
@@ -338,6 +349,7 @@ export class SeamlessDiffSwitcher extends React.Component<
       file,
       onOpenBinaryFile,
       onOpenSubmodule,
+      onOpenInExternalEditor,
       onChangeImageDiffType,
       onHideWhitespaceInDiffChanged,
     } = this.state.propSnapshot
@@ -374,6 +386,9 @@ export class SeamlessDiffSwitcher extends React.Component<
             onDiscardChanges={isLoadingDiff ? noop : onDiscardChanges}
             onOpenBinaryFile={isLoadingDiff ? noop : onOpenBinaryFile}
             onOpenSubmodule={isLoadingDiff ? noop : onOpenSubmodule}
+            onOpenInExternalEditor={
+              isLoadingDiff ? noop : onOpenInExternalEditor
+            }
             onChangeImageDiffType={isLoadingDiff ? noop : onChangeImageDiffType}
             onHideWhitespaceInDiffChanged={
               isLoadingDiff ? noop : onHideWhitespaceInDiffChanged

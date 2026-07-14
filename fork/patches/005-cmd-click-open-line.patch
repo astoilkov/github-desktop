@@ -1,0 +1,354 @@
+diff --git a/app/src/lib/editors/line-jump.ts b/app/src/lib/editors/line-jump.ts
+new file mode 100644
+index 0000000000..6e56f2dd52
+--- /dev/null
++++ b/app/src/lib/editors/line-jump.ts
+@@ -0,0 +1,40 @@
++/**
++ * Editors that expose a custom URL scheme capable of opening a file at a
++ * specific line. Keyed by the editor name as declared in the per-platform
++ * editor lists (darwin.ts/win32.ts/linux.ts).
++ *
++ * On macOS editors are launched via `open -a <bundle>`, which cannot forward a
++ * line number, so a URL scheme is the only reliable way to jump to a line. The
++ * same schemes work on Windows/Linux when the editor registers its handler.
++ */
++const editorURLSchemes = new Map<string, string>([
++  ['Visual Studio Code', 'vscode'],
++  ['Visual Studio Code (Insiders)', 'vscode-insiders'],
++  ['VSCodium', 'vscodium'],
++  ['Cursor', 'cursor'],
++  ['Windsurf', 'windsurf'],
++  ['Zed', 'zed'],
++])
++
++/**
++ * Build a URL that opens the given file at the given line in the editor, or
++ * null if the editor has no known line-jumping URL scheme (in which case the
++ * caller should fall back to opening the file without a line number).
++ */
++export function getEditorLineJumpURL(
++  editorName: string,
++  fullPath: string,
++  lineNumber: number
++): string | null {
++  const scheme = editorURLSchemes.get(editorName)
++  if (scheme === undefined) {
++    return null
++  }
++
++  // Windows paths use backslashes and lack a leading slash (e.g. `C:\foo`); the
++  // `file` authority in these schemes expects a POSIX-style, slash-prefixed path.
++  const posixPath = fullPath.replace(/\\/g, '/')
++  const rootedPath = posixPath.startsWith('/') ? posixPath : `/${posixPath}`
++
++  return `${scheme}://file${encodeURI(rootedPath)}:${lineNumber}:1`
++}
+diff --git a/app/src/lib/editors/index.ts b/app/src/lib/editors/index.ts
+index a08254c05b..0d81a44414 100644
+--- a/app/src/lib/editors/index.ts
++++ b/app/src/lib/editors/index.ts
+@@ -1,2 +1,3 @@
+ export * from './lookup'
+ export * from './launch'
++export * from './line-jump'
+diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
+index 6a317df93c..7e30ff98a7 100644
+--- a/app/src/lib/stores/app-store.ts
++++ b/app/src/lib/stores/app-store.ts
+@@ -159,6 +159,7 @@ import {
+ import {
+   findEditorOrDefault,
+   getAvailableEditors,
++  getEditorLineJumpURL,
+   launchCustomExternalEditor,
+   launchExternalEditor,
+ } from '../editors'
+@@ -7331,8 +7332,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
+       .catch(e => log.error('Could not open global Git config for editing', e))
+   }
+ 
+-  /** Open a path to a repository or file using the user's configured editor */
+-  public async _openInExternalEditor(fullPath: string): Promise<void> {
++  /**
++   * Open a path to a repository or file using the user's configured editor.
++   *
++   * When a line number is provided and the configured editor exposes a
++   * line-jumping URL scheme, the file is opened at that line. Otherwise it
++   * falls back to opening the file without a line number.
++   */
++  public async _openInExternalEditor(
++    fullPath: string,
++    lineNumber?: number
++  ): Promise<void> {
+     const { selectedExternalEditor, useCustomEditor, customEditor } =
+       this.getState()
+ 
+@@ -7351,6 +7361,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
+           return
+         }
+ 
++        if (lineNumber !== undefined) {
++          const url = getEditorLineJumpURL(match.editor, fullPath, lineNumber)
++          if (url !== null && (await shell.openExternal(url))) {
++            return
++          }
++        }
++
+         await launchExternalEditor(fullPath, match)
+       }
+     } catch (error) {
+diff --git a/app/src/ui/changes/changes.tsx b/app/src/ui/changes/changes.tsx
+index 95b7be986f..b03e120d04 100644
+--- a/app/src/ui/changes/changes.tsx
++++ b/app/src/ui/changes/changes.tsx
+@@ -129,6 +129,7 @@ export class Changes extends React.Component<IChangesProps, {}> {
+           }
+           onOpenBinaryFile={this.props.onOpenBinaryFile}
+           onOpenSubmodule={this.props.onOpenSubmodule}
++          onOpenInExternalEditor={this.onOpenInExternalEditor}
+           onChangeImageDiffType={this.props.onChangeImageDiffType}
+           onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
+         />
+@@ -140,6 +141,10 @@ export class Changes extends React.Component<IChangesProps, {}> {
+     this.props.dispatcher.onShowSideBySideDiffChanged(showSideBySideDiff)
+   }
+ 
++  private onOpenInExternalEditor = (fullPath: string, lineNumber: number) => {
++    this.props.dispatcher.openInExternalEditor(fullPath, lineNumber)
++  }
++
+   private onHideWhitespaceInDiffChanged = (hideWhitespaceInDiff: boolean) => {
+     return this.props.dispatcher.onHideWhitespaceInChangesDiffChanged(
+       hideWhitespaceInDiff,
+diff --git a/app/src/ui/diff/index.tsx b/app/src/ui/diff/index.tsx
+index f344d03f62..92fb19a432 100644
+--- a/app/src/ui/diff/index.tsx
++++ b/app/src/ui/diff/index.tsx
+@@ -1,4 +1,5 @@
+ import * as React from 'react'
++import * as Path from 'path'
+ 
+ import { assertNever } from '../../lib/fatal-error'
+ import { encodePathAsUrl } from '../../lib/path'
+@@ -88,6 +89,15 @@ interface IDiffProps {
+   /** Called when the user requests to open a submodule. */
+   readonly onOpenSubmodule?: (fullPath: string) => void
+ 
++  /**
++   * Called when the user cmd/ctrl-clicks a diff line to open it in their
++   * external editor at the given line number.
++   */
++  readonly onOpenInExternalEditor?: (
++    fullPath: string,
++    lineNumber: number
++  ) => void
++
+   /**
+    * Called when the user is viewing an image diff and requests
+    * to change the diff presentation mode.
+@@ -298,10 +308,19 @@ export class Diff extends React.Component<IDiffProps, IDiffState> {
+         }
+         onHideWhitespaceInDiffChanged={this.props.onHideWhitespaceInDiffChanged}
+         showDiffCheckMarks={this.props.showDiffCheckMarks}
++        onOpenInExternalEditor={
++          this.props.onOpenInExternalEditor && this.onOpenLineInExternalEditor
++        }
+       />
+     )
+   }
+ 
++  private onOpenLineInExternalEditor = (lineNumber: number) => {
++    const { repository, file, onOpenInExternalEditor } = this.props
++    const fullPath = Path.join(repository.path, file.path)
++    onOpenInExternalEditor?.(fullPath, lineNumber)
++  }
++
+   private showLargeDiff = () => {
+     this.setState({ forceShowLargeDiff: true })
+   }
+diff --git a/app/src/ui/diff/seamless-diff-switcher.tsx b/app/src/ui/diff/seamless-diff-switcher.tsx
+index 9a1c2710e3..68b995bcca 100644
+--- a/app/src/ui/diff/seamless-diff-switcher.tsx
++++ b/app/src/ui/diff/seamless-diff-switcher.tsx
+@@ -89,6 +89,17 @@ interface ISeamlessDiffSwitcherProps {
+   // eslint-disable-next-line react/no-unused-prop-types
+   readonly onOpenSubmodule?: (fullPath: string) => void
+ 
++  /**
++   * Called when the user cmd/ctrl-clicks a diff line to open it in their
++   * external editor at the given line number.
++   */
++  // Used in getDerivedStateFromProps, no-unused-prop-types doesn't know that
++  // eslint-disable-next-line react/no-unused-prop-types
++  readonly onOpenInExternalEditor?: (
++    fullPath: string,
++    lineNumber: number
++  ) => void
++
+   /**
+    * Called when the user is viewing an image diff and requests
+    * to change the diff presentation mode.
+@@ -338,6 +349,7 @@ export class SeamlessDiffSwitcher extends React.Component<
+       file,
+       onOpenBinaryFile,
+       onOpenSubmodule,
++      onOpenInExternalEditor,
+       onChangeImageDiffType,
+       onHideWhitespaceInDiffChanged,
+     } = this.state.propSnapshot
+@@ -374,6 +386,9 @@ export class SeamlessDiffSwitcher extends React.Component<
+             onDiscardChanges={isLoadingDiff ? noop : onDiscardChanges}
+             onOpenBinaryFile={isLoadingDiff ? noop : onOpenBinaryFile}
+             onOpenSubmodule={isLoadingDiff ? noop : onOpenSubmodule}
++            onOpenInExternalEditor={
++              isLoadingDiff ? noop : onOpenInExternalEditor
++            }
+             onChangeImageDiffType={isLoadingDiff ? noop : onChangeImageDiffType}
+             onHideWhitespaceInDiffChanged={
+               isLoadingDiff ? noop : onHideWhitespaceInDiffChanged
+diff --git a/app/src/ui/diff/side-by-side-diff-row.tsx b/app/src/ui/diff/side-by-side-diff-row.tsx
+index 83532dbaac..4b3897846f 100644
+--- a/app/src/ui/diff/side-by-side-diff-row.tsx
++++ b/app/src/ui/diff/side-by-side-diff-row.tsx
+@@ -196,6 +196,12 @@ interface ISideBySideDiffRowProps {
+    */
+   readonly onContextMenuLine: (diffLineNumber: number) => void
+ 
++  /**
++   * Called when the user cmd/ctrl-clicks a line to open it in their external
++   * editor. Called with the line's number in the current file.
++   */
++  readonly onOpenLineInExternalEditor?: (lineNumber: number) => void
++
+   /**
+    * Called when the user toggles the inclusion of line
+    */
+@@ -445,7 +451,8 @@ export class SideBySideDiffRow extends React.Component<
+     prefix: DiffRowPrefix = DiffRowPrefix.Nothing
+   ) {
+     return (
+-      <div className="content">
++      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
++      <div className="content" onMouseDown={this.onContentMouseDown}>
+         <div className="prefix">&nbsp;&nbsp;{prefix}&nbsp;&nbsp;</div>
+         <div className="content-wrapper">
+           {/* Copy to clipboard will ignore empty "lines" unless we add br */}
+@@ -1032,6 +1039,46 @@ export class SideBySideDiffRow extends React.Component<
+     }
+   }
+ 
++  private onContentMouseDown = (evt: React.MouseEvent) => {
++    const { onOpenLineInExternalEditor } = this.props
++    const isCmdOrCtrl = __DARWIN__ ? evt.metaKey && !evt.ctrlKey : evt.ctrlKey
++    if (!isCmdOrCtrl || onOpenLineInExternalEditor === undefined) {
++      return
++    }
++
++    const lineNumber = this.getCurrentFileLineNumber()
++    if (lineNumber === null) {
++      return
++    }
++
++    // Prevent the click from starting a text selection and reaching the diff's
++    // container-level mouse handling.
++    evt.preventDefault()
++    evt.stopPropagation()
++    onOpenLineInExternalEditor(lineNumber)
++  }
++
++  /**
++   * The line number of this row in the current (on-disk) version of the file,
++   * which is what the external editor opens. Added/context/modified rows map to
++   * their after-side number; deleted rows fall back to their before-side number
++   * as a best-effort target since the line no longer exists in the file.
++   */
++  private getCurrentFileLineNumber(): number | null {
++    const { row } = this.props
++    switch (row.type) {
++      case DiffRowType.Added:
++      case DiffRowType.Deleted:
++        return row.data.lineNumber
++      case DiffRowType.Modified:
++        return row.afterData.lineNumber
++      case DiffRowType.Context:
++        return row.afterLineNumber
++      case DiffRowType.Hunk:
++        return null
++    }
++  }
++
+   private onContextMenuHunk = () => {
+     if (this.props.hideWhitespaceInDiff) {
+       const { row } = this.props
+diff --git a/app/src/ui/diff/side-by-side-diff.tsx b/app/src/ui/diff/side-by-side-diff.tsx
+index 71810da89e..798e738d12 100644
+--- a/app/src/ui/diff/side-by-side-diff.tsx
++++ b/app/src/ui/diff/side-by-side-diff.tsx
+@@ -150,6 +150,12 @@ interface ISideBySideDiffProps {
+ 
+   /** Called when the user changes the hide whitespace in diffs setting. */
+   readonly onHideWhitespaceInDiffChanged: (checked: boolean) => void
++
++  /**
++   * Called when the user cmd/ctrl-clicks a line to open it in their external
++   * editor. Called with the line's number in the current file.
++   */
++  readonly onOpenInExternalEditor?: (lineNumber: number) => void
+ }
+ 
+ interface ISideBySideDiffState {
+@@ -917,6 +923,7 @@ export class SideBySideDiff extends React.Component<
+             onExpandHunk={this.onExpandHunk}
+             onClickHunk={this.onClickHunk}
+             onContextMenuLine={this.onContextMenuLine}
++            onOpenLineInExternalEditor={this.props.onOpenInExternalEditor}
+             onContextMenuHunk={this.onContextMenuHunk}
+             onContextMenuExpandHunk={this.onContextMenuExpandHunk}
+             onHideWhitespaceInDiffChanged={
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index b3966684b0..bc5d17f4d5 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -1626,10 +1626,14 @@ export class Dispatcher {
+   }
+ 
+   /**
+-   * Opens a path in the external editor selected by the user.
++   * Opens a path in the external editor selected by the user, optionally
++   * jumping to a specific line when the editor supports it.
+    */
+-  public async openInExternalEditor(fullPath: string): Promise<void> {
+-    return this.appStore._openInExternalEditor(fullPath)
++  public async openInExternalEditor(
++    fullPath: string,
++    lineNumber?: number
++  ): Promise<void> {
++    return this.appStore._openInExternalEditor(fullPath, lineNumber)
+   }
+ 
+   /**
+diff --git a/app/src/ui/history/selected-commits.tsx b/app/src/ui/history/selected-commits.tsx
+index 5226af46fe..e4b29a88fb 100644
+--- a/app/src/ui/history/selected-commits.tsx
++++ b/app/src/ui/history/selected-commits.tsx
+@@ -171,11 +171,19 @@ export class SelectedCommits extends React.Component<
+           onChangeImageDiffType={this.props.onChangeImageDiffType}
+           onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
+           onOpenSubmodule={this.props.onOpenSubmodule}
++          onOpenInExternalEditor={this.onOpenLineInExternalEditor}
+         />
+       </div>
+     )
+   }
+ 
++  private onOpenLineInExternalEditor = (
++    fullPath: string,
++    lineNumber: number
++  ) => {
++    this.props.dispatcher.openInExternalEditor(fullPath, lineNumber)
++  }
++
+   private renderDiffHeader() {
+     const { selectedFile } = this.props
+     if (selectedFile === null) {

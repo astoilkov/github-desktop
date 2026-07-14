@@ -197,6 +197,12 @@ interface ISideBySideDiffRowProps {
   readonly onContextMenuLine: (diffLineNumber: number) => void
 
   /**
+   * Called when the user cmd/ctrl-clicks a line to open it in their external
+   * editor. Called with the line's number in the current file.
+   */
+  readonly onOpenLineInExternalEditor?: (lineNumber: number) => void
+
+  /**
    * Called when the user toggles the inclusion of line
    */
   readonly onLineNumberCheckedChanged: (
@@ -445,7 +451,8 @@ export class SideBySideDiffRow extends React.Component<
     prefix: DiffRowPrefix = DiffRowPrefix.Nothing
   ) {
     return (
-      <div className="content">
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+      <div className="content" onMouseDown={this.onContentMouseDown}>
         <div className="prefix">&nbsp;&nbsp;{prefix}&nbsp;&nbsp;</div>
         <div className="content-wrapper">
           {/* Copy to clipboard will ignore empty "lines" unless we add br */}
@@ -1029,6 +1036,46 @@ export class SideBySideDiffRow extends React.Component<
     const data = this.getDiffData(evt.currentTarget)
     if (data !== null && data.diffLineNumber !== null) {
       this.props.onContextMenuLine(data.diffLineNumber)
+    }
+  }
+
+  private onContentMouseDown = (evt: React.MouseEvent) => {
+    const { onOpenLineInExternalEditor } = this.props
+    const isCmdOrCtrl = __DARWIN__ ? evt.metaKey && !evt.ctrlKey : evt.ctrlKey
+    if (!isCmdOrCtrl || onOpenLineInExternalEditor === undefined) {
+      return
+    }
+
+    const lineNumber = this.getCurrentFileLineNumber()
+    if (lineNumber === null) {
+      return
+    }
+
+    // Prevent the click from starting a text selection and reaching the diff's
+    // container-level mouse handling.
+    evt.preventDefault()
+    evt.stopPropagation()
+    onOpenLineInExternalEditor(lineNumber)
+  }
+
+  /**
+   * The line number of this row in the current (on-disk) version of the file,
+   * which is what the external editor opens. Added/context/modified rows map to
+   * their after-side number; deleted rows fall back to their before-side number
+   * as a best-effort target since the line no longer exists in the file.
+   */
+  private getCurrentFileLineNumber(): number | null {
+    const { row } = this.props
+    switch (row.type) {
+      case DiffRowType.Added:
+      case DiffRowType.Deleted:
+        return row.data.lineNumber
+      case DiffRowType.Modified:
+        return row.afterData.lineNumber
+      case DiffRowType.Context:
+        return row.afterLineNumber
+      case DiffRowType.Hunk:
+        return null
     }
   }
 

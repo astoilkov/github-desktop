@@ -1626,10 +1626,14 @@ export class Dispatcher {
   }
 
   /**
-   * Opens a path in the external editor selected by the user.
+   * Opens a path in the external editor selected by the user, optionally
+   * jumping to a specific line when the editor supports it.
    */
-  public async openInExternalEditor(fullPath: string): Promise<void> {
-    return this.appStore._openInExternalEditor(fullPath)
+  public async openInExternalEditor(
+    fullPath: string,
+    lineNumber?: number
+  ): Promise<void> {
+    return this.appStore._openInExternalEditor(fullPath, lineNumber)
   }
 
   /**

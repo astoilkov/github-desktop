@@ -150,6 +150,12 @@ interface ISideBySideDiffProps {
 
   /** Called when the user changes the hide whitespace in diffs setting. */
   readonly onHideWhitespaceInDiffChanged: (checked: boolean) => void
+
+  /**
+   * Called when the user cmd/ctrl-clicks a line to open it in their external
+   * editor. Called with the line's number in the current file.
+   */
+  readonly onOpenInExternalEditor?: (lineNumber: number) => void
 }
 
 interface ISideBySideDiffState {
@@ -917,6 +923,7 @@ export class SideBySideDiff extends React.Component<
             onExpandHunk={this.onExpandHunk}
             onClickHunk={this.onClickHunk}
             onContextMenuLine={this.onContextMenuLine}
+            onOpenLineInExternalEditor={this.props.onOpenInExternalEditor}
             onContextMenuHunk={this.onContextMenuHunk}
             onContextMenuExpandHunk={this.onContextMenuExpandHunk}
             onHideWhitespaceInDiffChanged={

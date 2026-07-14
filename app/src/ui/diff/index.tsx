@@ -1,4 +1,5 @@
 import * as React from 'react'
+import * as Path from 'path'
 
 import { assertNever } from '../../lib/fatal-error'
 import { encodePathAsUrl } from '../../lib/path'
@@ -87,6 +88,15 @@ interface IDiffProps {
 
   /** Called when the user requests to open a submodule. */
   readonly onOpenSubmodule?: (fullPath: string) => void
+
+  /**
+   * Called when the user cmd/ctrl-clicks a diff line to open it in their
+   * external editor at the given line number.
+   */
+  readonly onOpenInExternalEditor?: (
+    fullPath: string,
+    lineNumber: number
+  ) => void
 
   /**
    * Called when the user is viewing an image diff and requests
@@ -298,8 +308,17 @@ export class Diff extends React.Component<IDiffProps, IDiffState> {
         }
         onHideWhitespaceInDiffChanged={this.props.onHideWhitespaceInDiffChanged}
         showDiffCheckMarks={this.props.showDiffCheckMarks}
+        onOpenInExternalEditor={
+          this.props.onOpenInExternalEditor && this.onOpenLineInExternalEditor
+        }
       />
     )
+  }
+
+  private onOpenLineInExternalEditor = (lineNumber: number) => {
+    const { repository, file, onOpenInExternalEditor } = this.props
+    const fullPath = Path.join(repository.path, file.path)
+    onOpenInExternalEditor?.(fullPath, lineNumber)
   }
 
   private showLargeDiff = () => {

@@ -159,6 +159,7 @@ import {
 import {
   findEditorOrDefault,
   getAvailableEditors,
+  getEditorLineJumpURL,
   launchCustomExternalEditor,
   launchExternalEditor,
 } from '../editors'
@@ -7401,8 +7402,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
       .catch(e => log.error('Could not open global Git config for editing', e))
   }
 
-  /** Open a path to a repository or file using the user's configured editor */
-  public async _openInExternalEditor(fullPath: string): Promise<void> {
+  /**
+   * Open a path to a repository or file using the user's configured editor.
+   *
+   * When a line number is provided and the configured editor exposes a
+   * line-jumping URL scheme, the file is opened at that line. Otherwise it
+   * falls back to opening the file without a line number.
+   */
+  public async _openInExternalEditor(
+    fullPath: string,
+    lineNumber?: number
+  ): Promise<void> {
     const { selectedExternalEditor, useCustomEditor, customEditor } =
       this.getState()
 
@@ -7419,6 +7429,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
             )
           )
           return
+        }
+
+        if (lineNumber !== undefined) {
+          const url = getEditorLineJumpURL(match.editor, fullPath, lineNumber)
+          if (url !== null && (await shell.openExternal(url))) {
+            return
+          }
         }
 
         await launchExternalEditor(fullPath, match)
