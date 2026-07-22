@@ -424,6 +424,7 @@ function getInitialRepositoryState(): IRepositoryState {
     commitAuthor: null,
     commitLookup: new Map<string, Commit>(),
     localCommitSHAs: [],
+    branchCommitSHAs: [],
     localTags: null,
     tagsToPush: null,
     aheadBehind: null,

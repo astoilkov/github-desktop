@@ -31,6 +31,19 @@
     }
   }
 
+  // Commits on the checked out branch that aren't on the default branch.
+  // Overlaid on the row rather than the .commit so it also covers the border
+  // between items, forming one continuous line.
+  .list-item.branch-commit::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    background: var(--color-new);
+  }
+
   &.has-highlighted-commits {
     .list-item {
       transition: opacity 0.5s;

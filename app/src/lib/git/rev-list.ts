@@ -131,17 +131,19 @@ export async function getCommitsBetweenCommits(
 }
 
 /**
- * Get a list of commits inside the provided range.
+ * Get a list of commits inside the provided range. Also accepts an array of
+ * revisions in rev-list syntax to express ranges with multiple exclusions,
+ * e.g. `['feature', '^main', '^origin/main']`.
  *
  * Returns `null` when it is not possible to perform because of a bad range.
  */
 export async function getCommitsInRange(
   repository: Repository,
-  range: string
+  range: string | ReadonlyArray<string>
 ): Promise<ReadonlyArray<CommitOneLine> | null> {
   const args = [
     'rev-list',
-    range,
+    ...(typeof range === 'string' ? [range] : range),
     '--reverse',
     // the combination of these two arguments means each line of the stdout
     // will contain the full commit sha and a commit summary

@@ -62,6 +62,7 @@ import {
   parseSingleUnfoldedTrailer,
   isCoAuthoredByTrailer,
   getAheadBehind,
+  getCommitsInRange,
   revRange,
   revSymmetricDifference,
   getConfigValue,
@@ -132,6 +133,8 @@ export class GitStore extends BaseStore {
   private _recentBranches: ReadonlyArray<Branch> = []
 
   private _localCommitSHAs: ReadonlyArray<string> = []
+
+  private _branchCommitSHAs: ReadonlyArray<string> = []
 
   private _commitMessage: ICommitMessage = DefaultCommitMessage
 
@@ -661,6 +664,61 @@ export class GitStore extends BaseStore {
    */
   public get localCommitSHAs(): ReadonlyArray<string> {
     return this._localCommitSHAs
+  }
+
+  /**
+   * Load the SHAs of commits that are on the given branch but not on the
+   * default branch, so the history view can indicate which commits belong to
+   * the checked out branch.
+   *
+   * Excludes commits reachable from the default branch's upstream as well,
+   * so a stale local default branch doesn't misattribute base-branch commits
+   * to the checked out branch.
+   *
+   * Clears the cached SHAs when the default branch itself (or no branch) is
+   * checked out, or when there's no default branch to compare against.
+   */
+  public async loadBranchCommits(branch: Branch | null): Promise<void> {
+    const defaultBranch = this._defaultBranch
+
+    if (
+      branch === null ||
+      defaultBranch === null ||
+      branch.name === defaultBranch.name
+    ) {
+      if (this._branchCommitSHAs.length > 0) {
+        this._branchCommitSHAs = []
+        this.emitUpdate()
+      }
+      return
+    }
+
+    const excludedRefs = [defaultBranch.name]
+    if (defaultBranch.upstream !== null) {
+      excludedRefs.push(defaultBranch.upstream)
+    }
+
+    const commits = await this.performFailableOperation(() =>
+      getCommitsInRange(this.repository, [
+        branch.name,
+        ...excludedRefs.map(ref => `^${ref}`),
+      ])
+    )
+
+    if (commits === undefined || commits === null) {
+      return
+    }
+
+    this._branchCommitSHAs = commits.map(c => c.sha)
+    this.emitUpdate()
+  }
+
+  /**
+   * The SHAs of commits that are on the current branch but not on the default
+   * branch. Empty when the default branch (or no branch) is checked out.
+   */
+  public get branchCommitSHAs(): ReadonlyArray<string> {
+    return this._branchCommitSHAs
   }
 
   /** Store the given commits. */

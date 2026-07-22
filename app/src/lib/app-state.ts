@@ -577,6 +577,12 @@ export interface IRepositoryState {
    */
   readonly localCommitSHAs: ReadonlyArray<string>
 
+  /**
+   * The SHAs of commits that are on the current branch but not on the default
+   * branch. Empty when the default branch (or no branch) is checked out.
+   */
+  readonly branchCommitSHAs: ReadonlyArray<string>
+
   /** The remote currently associated with the repository, if defined in the configuration */
   readonly remote: IRemote | null
 

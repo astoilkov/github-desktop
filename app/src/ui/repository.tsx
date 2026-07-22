@@ -338,6 +338,7 @@ export class RepositoryView extends React.Component<
       commitSelection: { shas },
       commitLookup,
       localCommitSHAs,
+      branchCommitSHAs,
       localTags,
       tagsToPush,
       multiCommitOperationState: mcos,
@@ -364,6 +365,7 @@ export class RepositoryView extends React.Component<
         emoji={emoji}
         commitLookup={commitLookup}
         localCommitSHAs={localCommitSHAs}
+        branchCommitSHAs={branchCommitSHAs}
         localTags={localTags}
         dispatcher={dispatcher}
         onRevertCommit={this.onRevertCommit}

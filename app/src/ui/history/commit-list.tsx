@@ -60,6 +60,13 @@ interface ICommitListProps {
   /** The list of known local commits for the current branch */
   readonly localCommitSHAs: ReadonlyArray<string>
 
+  /**
+   * SHAs of commits that are on the current branch but not on the default
+   * branch. Used to visually indicate which commits belong to the checked
+   * out branch.
+   */
+  readonly branchCommitSHAs?: ReadonlyArray<string>
+
   /** The message to display inside the list when no results are displayed */
   readonly emptyListMessage?: JSX.Element | string
 
@@ -450,22 +457,30 @@ export class CommitList extends React.Component<
   }
 
   private getRowCustomClassMap = () => {
-    const { commitSHAs, shasToHighlight } = this.props
-    if (shasToHighlight === undefined || shasToHighlight.length === 0) {
-      return undefined
-    }
-
-    const rowsForShasNotInDiff = commitSHAs
-      .filter(sha => shasToHighlight.includes(sha))
-      .map(sha => this.rowForSHA(sha))
-
-    if (rowsForShasNotInDiff.length === 0) {
-      return undefined
-    }
-
     const rowClassMap = new Map<string, ReadonlyArray<number>>()
-    rowClassMap.set('highlighted', rowsForShasNotInDiff)
-    return rowClassMap
+
+    const highlightedRows = this.rowsForSHAs(this.props.shasToHighlight)
+    if (highlightedRows.length > 0) {
+      rowClassMap.set('highlighted', highlightedRows)
+    }
+
+    const branchCommitRows = this.rowsForSHAs(this.props.branchCommitSHAs)
+    if (branchCommitRows.length > 0) {
+      rowClassMap.set('branch-commit', branchCommitRows)
+    }
+
+    return rowClassMap.size > 0 ? rowClassMap : undefined
+  }
+
+  private rowsForSHAs(shas: ReadonlyArray<string> | undefined) {
+    if (shas === undefined || shas.length === 0) {
+      return []
+    }
+
+    const shaSet = new Set(shas)
+    return this.props.commitSHAs
+      .filter(sha => shaSet.has(sha))
+      .map(sha => this.rowForSHA(sha))
   }
 
   private renderExpandedAuthor(user: IAvatarUser): string | JSX.Element {
@@ -614,6 +629,7 @@ export class CommitList extends React.Component<
           invalidationProps={{
             commits: this.props.commitSHAs,
             localCommitSHAs: this.props.localCommitSHAs,
+            branchCommitSHAs: this.props.branchCommitSHAs,
             commitLookupHash: this.commitsHash(this.getVisibleCommits()),
             tagsToPush: this.props.tagsToPush,
             shasToHighlight: this.props.shasToHighlight,
