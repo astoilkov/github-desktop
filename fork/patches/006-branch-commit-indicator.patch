@@ -43,10 +43,18 @@ index cdb65b75e1..7610fdc33e 100644
      // the combination of these two arguments means each line of the stdout
      // will contain the full commit sha and a commit summary
 diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
-index 7e30ff98a7..47e2a12e66 100644
+index e3aa71d43b..cf92efc745 100644
 --- a/app/src/lib/stores/app-store.ts
 +++ b/app/src/lib/stores/app-store.ts
-@@ -1376,6 +1376,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
+@@ -159,6 +159,7 @@ import {
+ import {
+   findEditorOrDefault,
+   getAvailableEditors,
++  getEditorLineJumpURL,
+   launchCustomExternalEditor,
+   launchExternalEditor,
+ } from '../editors'
+@@ -1376,6 +1377,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
      this.repositoryStateCache.update(repository, () => ({
        commitLookup: gitStore.commitLookup,
        localCommitSHAs: gitStore.localCommitSHAs,
@@ -54,7 +62,7 @@ index 7e30ff98a7..47e2a12e66 100644
        localTags: gitStore.localTags,
        aheadBehind: gitStore.aheadBehind,
        tagsToPush: gitStore.tagsToPush,
-@@ -4187,6 +4188,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
+@@ -4254,6 +4256,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
  
      if (tip.kind === TipState.Valid) {
        await gitStore.loadLocalCommits(tip.branch)
@@ -64,6 +72,40 @@ index 7e30ff98a7..47e2a12e66 100644
      }
  
      return this.updateOrSelectFirstCommit(
+@@ -7401,8 +7406,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
+       .catch(e => log.error('Could not open global Git config for editing', e))
+   }
+ 
+-  /** Open a path to a repository or file using the user's configured editor */
+-  public async _openInExternalEditor(fullPath: string): Promise<void> {
++  /**
++   * Open a path to a repository or file using the user's configured editor.
++   *
++   * When a line number is provided and the configured editor exposes a
++   * line-jumping URL scheme, the file is opened at that line. Otherwise it
++   * falls back to opening the file without a line number.
++   */
++  public async _openInExternalEditor(
++    fullPath: string,
++    lineNumber?: number
++  ): Promise<void> {
+     const { selectedExternalEditor, useCustomEditor, customEditor } =
+       this.getState()
+ 
+@@ -7421,6 +7435,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
+           return
+         }
+ 
++        if (lineNumber !== undefined) {
++          const url = getEditorLineJumpURL(match.editor, fullPath, lineNumber)
++          if (url !== null && (await shell.openExternal(url))) {
++            return
++          }
++        }
++
+         await launchExternalEditor(fullPath, match)
+       }
+     } catch (error) {
 diff --git a/app/src/lib/stores/git-store.ts b/app/src/lib/stores/git-store.ts
 index 16464844d4..9ff56ed7fd 100644
 --- a/app/src/lib/stores/git-store.ts

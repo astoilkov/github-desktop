@@ -1,22 +1,22 @@
 diff --git a/app/app-info.ts b/app/app-info.ts
-index ec49654d49..8521a600ab 100644
+index 382bb720b1..ff63ac5b36 100644
 --- a/app/app-info.ts
 +++ b/app/app-info.ts
-@@ -26,6 +26,7 @@ export function getReplacements() {
+@@ -29,6 +29,7 @@ export function getReplacements() {
      __DEV_SECRETS__: isDevBuild || !process.env.DESKTOP_OAUTH_CLIENT_SECRET,
      __RELEASE_CHANNEL__: s(channel),
      __UPDATES_URL__: s(process.env.DESKTOP_E2E_UPDATES_URL ?? getUpdatesURL()),
 +    __SKIP_UPDATE_CHECK__: process.env.DESKTOP_SKIP_UPDATE_CHECK === '1',
-     __SHA__: s(getSHA()),
-     'process.platform': s(process.platform),
-     'process.env.NODE_ENV': s(process.env.NODE_ENV || 'development'),
+     __ERROR_REPORTING_ENDPOINT__: optionalStringReplacement(
+       process.env.DESKTOP_ERROR_REPORTING_ENDPOINT
+     ),
 diff --git a/app/src/lib/globals.d.ts b/app/src/lib/globals.d.ts
-index b6bc8193ec..241cde9c24 100644
+index 4e7337d942..389c72c2c9 100644
 --- a/app/src/lib/globals.d.ts
 +++ b/app/src/lib/globals.d.ts
-@@ -50,6 +50,13 @@ declare const __RELEASE_CHANNEL__:
- /** The URL for Squirrel's updates. */
- declare const __UPDATES_URL__: string
+@@ -56,6 +56,13 @@ declare const __ERROR_REPORTING_ENDPOINT__: string | undefined
+ /** The URL for non-fatal exception reports. */
+ declare const __NON_FATAL_ERROR_REPORTING_ENDPOINT__: string | undefined
  
 +/**
 + * Whether to skip checking for (and installing) updates entirely. Set for
@@ -95,7 +95,7 @@ index 8d516584b0..dfde19b6de 100644
        icon = octicons.repo
        title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
 diff --git a/package.json b/package.json
-index 3a46319b17..1c0d66f8ad 100644
+index 6fa47023c2..717b67d134 100644
 --- a/package.json
 +++ b/package.json
 @@ -28,6 +28,7 @@

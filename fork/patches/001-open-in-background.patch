@@ -98,7 +98,7 @@ index e700423b4e..a9d4a4206e 100644
    })
  }
 diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
-index 9fcc4693a2..b3966684b0 100644
+index 9fcc4693a2..bc5d17f4d5 100644
 --- a/app/src/ui/dispatcher/dispatcher.ts
 +++ b/app/src/ui/dispatcher/dispatcher.ts
 @@ -40,6 +40,7 @@ import {
@@ -109,7 +109,25 @@ index 9fcc4693a2..b3966684b0 100644
    IOpenRepositoryFromURLAction,
    IUnknownAction,
    URLActionType,
-@@ -1937,6 +1938,44 @@ export class Dispatcher {
+@@ -1625,10 +1626,14 @@ export class Dispatcher {
+   }
+ 
+   /**
+-   * Opens a path in the external editor selected by the user.
++   * Opens a path in the external editor selected by the user, optionally
++   * jumping to a specific line when the editor supports it.
+    */
+-  public async openInExternalEditor(fullPath: string): Promise<void> {
+-    return this.appStore._openInExternalEditor(fullPath)
++  public async openInExternalEditor(
++    fullPath: string,
++    lineNumber?: number
++  ): Promise<void> {
++    return this.appStore._openInExternalEditor(fullPath, lineNumber)
+   }
+ 
+   /**
+@@ -1937,6 +1942,44 @@ export class Dispatcher {
      return false
    }
  
@@ -154,7 +172,7 @@ index 9fcc4693a2..b3966684b0 100644
    private async openRepositoryFromUrl(action: IOpenRepositoryFromURLAction) {
      const { url, pr, branch, filepath } = action
  
-@@ -2060,14 +2099,14 @@ export class Dispatcher {
+@@ -2060,14 +2103,14 @@ export class Dispatcher {
        // user may accidentally provide a folder within the repository
        // this ensures we use the repository root, if it is actually a repository
        // otherwise we consider it an untracked repository
@@ -177,7 +195,7 @@ index 9fcc4693a2..b3966684b0 100644
  
        const { repositories } = this.appStore.getState()
        const existingRepository = matchExistingRepository(repositories, path)
-@@ -2093,6 +2132,19 @@ export class Dispatcher {
+@@ -2093,6 +2136,19 @@ export class Dispatcher {
          return
        }
  
@@ -197,7 +215,7 @@ index 9fcc4693a2..b3966684b0 100644
        await this.showPopup({ type: PopupType.AddRepository, path })
      }
    }
-@@ -2119,6 +2171,10 @@ export class Dispatcher {
+@@ -2119,6 +2175,10 @@ export class Dispatcher {
          this.openRepositoryFromUrl(action)
          break
  

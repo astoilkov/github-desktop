@@ -1,3 +1,11 @@
+diff --git a/app/src/lib/editors/index.ts b/app/src/lib/editors/index.ts
+index a08254c05b..0d81a44414 100644
+--- a/app/src/lib/editors/index.ts
++++ b/app/src/lib/editors/index.ts
+@@ -1,2 +1,3 @@
+ export * from './lookup'
+ export * from './launch'
++export * from './line-jump'
 diff --git a/app/src/lib/editors/line-jump.ts b/app/src/lib/editors/line-jump.ts
 new file mode 100644
 index 0000000000..6e56f2dd52
@@ -44,16 +52,8 @@ index 0000000000..6e56f2dd52
 +
 +  return `${scheme}://file${encodeURI(rootedPath)}:${lineNumber}:1`
 +}
-diff --git a/app/src/lib/editors/index.ts b/app/src/lib/editors/index.ts
-index a08254c05b..0d81a44414 100644
---- a/app/src/lib/editors/index.ts
-+++ b/app/src/lib/editors/index.ts
-@@ -1,2 +1,3 @@
- export * from './lookup'
- export * from './launch'
-+export * from './line-jump'
 diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
-index 6a317df93c..7e30ff98a7 100644
+index e3aa71d43b..cf92efc745 100644
 --- a/app/src/lib/stores/app-store.ts
 +++ b/app/src/lib/stores/app-store.ts
 @@ -159,6 +159,7 @@ import {
@@ -64,7 +64,25 @@ index 6a317df93c..7e30ff98a7 100644
    launchCustomExternalEditor,
    launchExternalEditor,
  } from '../editors'
-@@ -7331,8 +7332,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
+@@ -1376,6 +1377,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     this.repositoryStateCache.update(repository, () => ({
+       commitLookup: gitStore.commitLookup,
+       localCommitSHAs: gitStore.localCommitSHAs,
++      branchCommitSHAs: gitStore.branchCommitSHAs,
+       localTags: gitStore.localTags,
+       aheadBehind: gitStore.aheadBehind,
+       tagsToPush: gitStore.tagsToPush,
+@@ -4254,6 +4256,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
+ 
+     if (tip.kind === TipState.Valid) {
+       await gitStore.loadLocalCommits(tip.branch)
++      await gitStore.loadBranchCommits(tip.branch)
++    } else {
++      await gitStore.loadBranchCommits(null)
+     }
+ 
+     return this.updateOrSelectFirstCommit(
+@@ -7401,8 +7406,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
        .catch(e => log.error('Could not open global Git config for editing', e))
    }
  
@@ -84,7 +102,7 @@ index 6a317df93c..7e30ff98a7 100644
      const { selectedExternalEditor, useCustomEditor, customEditor } =
        this.getState()
  
-@@ -7351,6 +7361,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
+@@ -7421,6 +7435,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
            return
          }
  
@@ -208,7 +226,7 @@ index 9a1c2710e3..68b995bcca 100644
              onHideWhitespaceInDiffChanged={
                isLoadingDiff ? noop : onHideWhitespaceInDiffChanged
 diff --git a/app/src/ui/diff/side-by-side-diff-row.tsx b/app/src/ui/diff/side-by-side-diff-row.tsx
-index 83532dbaac..4b3897846f 100644
+index a7c8cb0114..5bc99c240d 100644
 --- a/app/src/ui/diff/side-by-side-diff-row.tsx
 +++ b/app/src/ui/diff/side-by-side-diff-row.tsx
 @@ -196,6 +196,12 @@ interface ISideBySideDiffRowProps {
@@ -307,10 +325,18 @@ index 71810da89e..798e738d12 100644
              onContextMenuExpandHunk={this.onContextMenuExpandHunk}
              onHideWhitespaceInDiffChanged={
 diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
-index b3966684b0..bc5d17f4d5 100644
+index 9fcc4693a2..bc5d17f4d5 100644
 --- a/app/src/ui/dispatcher/dispatcher.ts
 +++ b/app/src/ui/dispatcher/dispatcher.ts
-@@ -1626,10 +1626,14 @@ export class Dispatcher {
+@@ -40,6 +40,7 @@ import {
+ } from '../../lib/git'
+ import { isGitOnPath } from '../../lib/is-git-on-path'
+ import {
++  IOpenLocalRepositoryFromURLAction,
+   IOpenRepositoryFromURLAction,
+   IUnknownAction,
+   URLActionType,
+@@ -1625,10 +1626,14 @@ export class Dispatcher {
    }
  
    /**
@@ -328,6 +354,105 @@ index b3966684b0..bc5d17f4d5 100644
    }
  
    /**
+@@ -1937,6 +1942,44 @@ export class Dispatcher {
+     return false
+   }
+ 
++  private async openLocalRepositoryFromUrl(
++    action: IOpenLocalRepositoryFromURLAction
++  ) {
++    const requestedPath = action.path
++
++    const repositoryType = await getRepositoryType(requestedPath).catch(e => {
++      log.error('Could not determine repository type', e)
++      return { kind: 'missing' } as const
++    })
++    const path =
++      repositoryType.kind === 'regular'
++        ? repositoryType.topLevelWorkingDirectory
++        : requestedPath
++
++    const { repositories } = this.appStore.getState()
++    const existingRepository = matchExistingRepository(repositories, path)
++
++    if (existingRepository) {
++      await this.selectRepository(existingRepository)
++    } else if (repositoryType.kind === 'regular') {
++      // It's already a valid Git repository, so add and open it directly
++      // instead of bouncing through the Add Local Repository dialog. This is
++      // safe even for silent (background) activations since it surfaces no UI.
++      const addedRepositories = await this.addRepositories([path])
++
++      if (addedRepositories.length > 0) {
++        this.recordAddExistingRepository()
++        await this.selectRepository(addedRepositories[0])
++      }
++    } else if (!action.openInBackground) {
++      // Not a Git repository yet — keep the dialog so it can be initialized,
++      // but only when the URL asked to foreground the app. Silent activations
++      // should stay silent rather than popping a dialog on every workspace
++      // switch, which would be hostile.
++      await this.showPopup({ type: PopupType.AddRepository, path })
++    }
++  }
++
+   private async openRepositoryFromUrl(action: IOpenRepositoryFromURLAction) {
+     const { url, pr, branch, filepath } = action
+ 
+@@ -2060,14 +2103,14 @@ export class Dispatcher {
+       // user may accidentally provide a folder within the repository
+       // this ensures we use the repository root, if it is actually a repository
+       // otherwise we consider it an untracked repository
+-      const path = await getRepositoryType(action.path)
+-        .then(t =>
+-          t.kind === 'regular' ? t.topLevelWorkingDirectory : action.path
+-        )
+-        .catch(e => {
+-          log.error('Could not determine repository type', e)
+-          return action.path
+-        })
++      const repositoryType = await getRepositoryType(action.path).catch(e => {
++        log.error('Could not determine repository type', e)
++        return { kind: 'missing' } as const
++      })
++      const path =
++        repositoryType.kind === 'regular'
++          ? repositoryType.topLevelWorkingDirectory
++          : action.path
+ 
+       const { repositories } = this.appStore.getState()
+       const existingRepository = matchExistingRepository(repositories, path)
+@@ -2093,6 +2136,19 @@ export class Dispatcher {
+         return
+       }
+ 
++      if (repositoryType.kind === 'regular') {
++        // It's already a valid Git repository, so add and open it directly
++        // instead of bouncing through the Add Local Repository dialog.
++        const addedRepositories = await this.addRepositories([path])
++
++        if (addedRepositories.length > 0) {
++          this.recordAddExistingRepository()
++          await this.selectRepository(addedRepositories[0])
++        }
++        return
++      }
++
++      // Not a Git repository yet — keep the dialog so it can be initialized.
+       await this.showPopup({ type: PopupType.AddRepository, path })
+     }
+   }
+@@ -2119,6 +2175,10 @@ export class Dispatcher {
+         this.openRepositoryFromUrl(action)
+         break
+ 
++      case 'open-local-repository-from-url':
++        this.openLocalRepositoryFromUrl(action)
++        break
++
+       default:
+         const unknownAction: IUnknownAction = action
+         log.warn(
 diff --git a/app/src/ui/history/selected-commits.tsx b/app/src/ui/history/selected-commits.tsx
 index 5226af46fe..e4b29a88fb 100644
 --- a/app/src/ui/history/selected-commits.tsx
