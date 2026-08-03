@@ -1,0 +1,35 @@
+script/build.ts
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 66-73,216,218-219,224-225
+app/src/ui/app.tsx
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 645-650
+fork/patches/003-deploy-local.md
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 1-160
+fork/patches/003-deploy-local.patch
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 1-231
+package.json
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 31
+app/src/lib/globals.d.ts
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 60-65
+script/entitlements-local.plist
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 1-19
+script/deploy-local.ts
+  s_6e0869e89aeb2c::t_ba35da8f0a3fe4 1-101
+app/app-info.ts
+  s_6e0869e89aeb2c::t_573097d0529a30 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "dbdba82739495d418ad370a45cdcc399de3a963d",
+  "prompts": {},
+  "sessions": {
+    "s_6e0869e89aeb2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad79335c-c080-41a4-9cdf-fb0a6431b6eb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Antonio Stoilkov <hello@astoilkov.com>"
+    }
+  }
+}
