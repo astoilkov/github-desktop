@@ -17,6 +17,11 @@ source of truth for intent and is what guides conflict resolution), and
 `yarn install` is run so the installed dependencies match the new release's
 `package.json` / `yarn.lock`.
 
+The final report also includes the upstream release notes for every version you
+moved through, with the entries that touch fork-patched code called out — those
+are the ones most likely to have silently broken a patch even when the rebase
+was clean.
+
 > **History is rewritten.** A rebase gives the replayed commits new hashes, so
 > after this runs your local branch and `origin` will have diverged. Pushing
 > afterward needs `git push --force-with-lease` (the command does **not** push —
@@ -68,7 +73,11 @@ Before doing anything, verify and stop with a clear message if any fails:
    base=$(git merge-base <release-tag> HEAD)
    git log --oneline $base..HEAD          # the commits to be rebased
    git log --merges --oneline $base..HEAD # must be empty
+   git describe --tags --abbrev=0 $base   # the release you're moving FROM
    ```
+
+   Record `$base` and the release tag it describes — step 10 needs the
+   from-version to work out which release notes are new.
 
    The rebase model expects a **linear** stack of fork commits (no merge
    commits among them). If `git log --merges $base..HEAD` is non-empty (e.g. an
@@ -115,8 +124,13 @@ Before doing anything, verify and stop with a clear message if any fails:
    **Touched files** between the release tag and the new HEAD:
 
    ```sh
-   git diff <release-tag> HEAD -- <touched files from NNN-*.md> > fork/patches/NNN-<slug>.patch
+   git diff <release-tag> HEAD -- <touched files from NNN-*.md> >| fork/patches/NNN-<slug>.patch
    ```
+
+   Use `>|`, not `>` — the user's zsh sets `noclobber`, so a plain `>` onto an
+   existing `.patch` fails with "file exists" and writes nothing. Check
+   `git status --porcelain fork/patches/` afterwards to confirm the files were
+   actually rewritten.
 
    Most `.patch` files only change when upstream moved surrounding lines; that's
    expected. If **any** `.patch` file changed, create a single follow-up commit
@@ -135,12 +149,50 @@ Before doing anything, verify and stop with a clear message if any fails:
    (`yarn.lock` is already part of the rebased history). Report whether it
    succeeded and surface any errors so the user knows the tree is buildable.
 
-10. **Do not push.** Print:
-   - The release version/tag rebased onto.
+10. **Collect the upstream release notes for the versions you moved through.**
+   `changelog.json` at the new HEAD lists every release, newest first, so slice
+   it between the version you moved to and the one you came from (step 5's
+   `git describe`). Use the bare versions, without the `release-` prefix:
+
+   ```sh
+   node -e "
+   const { releases } = require('./changelog.json')
+   const versions = Object.keys(releases)
+   const from = versions.indexOf('<new-version>')
+   const to = versions.indexOf('<old-version>')
+   for (const v of versions.slice(from, to)) {
+     console.log('## ' + v)
+     releases[v].forEach(e => console.log('  - ' + e))
+   }
+   "
+   ```
+
+   The slice includes the betas and test builds, whose entries are normally a
+   subset of the stable release above them. Report the stable releases' entries
+   as the notes; only mention a pre-release entry separately if it appears in no
+   stable release in the range.
+
+   Then work out which entries matter to this fork: read the **Touched files**
+   of every `fork/patches/NNN-*.md` and flag each note whose area overlaps them.
+   A clean rebase only means the text merged — an upstream fix that reworks a
+   file a patch depends on can still break the patch's behavior, and these
+   flagged entries tell the user which verify steps to run first.
+
+11. **Do not push.** Print:
+   - The release version/tag rebased onto, and the one you came from.
    - The old HEAD sha and the backup branch name (and how to recover:
      `git rebase --abort` mid-rebase, or `git reset --hard <backup>` after).
    - The new HEAD sha and the replayed-commit status table from step 7.
-   - Which `.patch` files were regenerated (if any).
+     For each `resolved-conflict` commit, one or two sentences on what upstream
+     changed, what the patch wanted, and how you reconciled them.
+   - Which `.patch` files were regenerated (if any), and which were unchanged.
+   - Whether `yarn install` succeeded.
+   - **Upstream release notes** from step 10, grouped by version and by
+     `[Fixed]` / `[Improved]` / `[New]`, with issue numbers linked to
+     `https://github.com/desktop/desktop/issues/<n>`. Follow them with a short
+     **"worth noting for your fork"** section naming the flagged entries, the
+     patches they overlap, and the verify steps to run first. Say so plainly
+     when nothing overlaps.
    - A single concatenated checklist built from the `## Verify` section of
      every patch's `.md`, so the user has one place to look for smoke tests.
    - A reminder that pushing requires `git push --force-with-lease` because the
