@@ -1,0 +1,27 @@
+fork/patches/004-skip-add-repo-dialog.patch
+  s_6e0869e89aeb2c::t_a2e97bfae13a57 68,79-97,142,165,185
+fork/patches/001-open-in-background.patch
+  s_6e0869e89aeb2c::t_a2e97bfae13a57 101,112-130,175,198,218
+fork/patches/003-deploy-local.patch
+  s_6e0869e89aeb2c::t_a2e97bfae13a57 2,5,10-12,14,17-19,98
+fork/patches/005-cmd-click-open-line.patch
+  s_6e0869e89aeb2c::t_a2e97bfae13a57 1-8,56,67-85,105,229,328,331-339,357-455
+fork/patches/006-branch-commit-indicator.patch
+  s_6e0869e89aeb2c::t_a2e97bfae13a57 46,49-57,65,75-108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "1c4cab2c4d79505663891e1b185f503b4c5e5748",
+  "prompts": {},
+  "sessions": {
+    "s_6e0869e89aeb2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad79335c-c080-41a4-9cdf-fb0a6431b6eb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Antonio Stoilkov <hello@astoilkov.com>"
+    }
+  }
+}
