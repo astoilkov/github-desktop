@@ -1,7 +1,7 @@
 import { clipboard } from 'electron'
 import React from 'react'
 import * as octicons from './octicons/octicons.generated'
-import { Octicon } from './octicons'
+import { Octicon, OcticonSymbol } from './octicons'
 import { sleep } from '../lib/promise'
 import { Button } from './lib/button'
 import { AriaLiveContainer } from './accessibility/aria-live-container'
@@ -9,6 +9,9 @@ import { AriaLiveContainer } from './accessibility/aria-live-container'
 interface ICopyButtonProps {
   readonly copyContent: string
   readonly ariaLabel: string
+
+  /** The icon to show before the content is copied. Defaults to `copy`. */
+  readonly symbol?: OcticonSymbol
 }
 
 interface ICopyButtonState {
@@ -41,7 +44,9 @@ export class CopyButton extends React.Component<
   public renderSymbol() {
     const { showCopied } = this.state
 
-    const symbol = showCopied ? octicons.check : octicons.copy
+    const symbol = showCopied
+      ? octicons.check
+      : this.props.symbol ?? octicons.copy
 
     return <Octicon symbol={symbol} height={24} />
   }

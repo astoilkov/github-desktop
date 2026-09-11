@@ -212,6 +212,7 @@ export class SelectedCommits extends React.Component<
         selectedCommits={commits}
         shasInDiff={this.props.shasInDiff}
         changesetData={this.props.changesetData}
+        selectedFile={this.props.selectedFile}
         emoji={this.props.emoji}
         repository={this.props.repository}
         onExpandChanged={this.onExpandChanged}

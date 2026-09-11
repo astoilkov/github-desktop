@@ -1,4 +1,6 @@
 import * as React from 'react'
+import * as Os from 'os'
+import * as Path from 'path'
 import classNames from 'classnames'
 
 import { Octicon } from '../octicons'
@@ -6,6 +8,7 @@ import * as octicons from '../octicons/octicons.generated'
 import { RichText } from '../lib/rich-text'
 import { Repository } from '../../models/repository'
 import { Commit } from '../../models/commit'
+import { CommittedFileChange } from '../../models/status'
 import { getAvatarUsersForCommit, IAvatarUser } from '../../models/avatar'
 import { AvatarStack } from '../lib/avatar-stack'
 import { CommitAttribution } from '../lib/commit-attribution'
@@ -27,6 +30,7 @@ interface IExpandableCommitSummaryProps {
   readonly selectedCommits: ReadonlyArray<Commit>
   readonly shasInDiff: ReadonlyArray<string>
   readonly changesetData: IChangesetData
+  readonly selectedFile: CommittedFileChange | null
   readonly emoji: Map<string, Emoji>
 
   /**
@@ -444,6 +448,15 @@ export class ExpandableCommitSummary extends React.Component<
         <Octicon symbol={octicons.gitCommit} />
         <div className="ref selectable">{isExpanded ? sha : shortSha}</div>
         <CopyButton ariaLabel="Copy the full SHA" copyContent={sha} />
+        <CopyButton
+          ariaLabel="Copy the repository path, SHA, and file path"
+          copyContent={getCommitLocation(
+            this.props.repository,
+            sha,
+            this.props.selectedFile
+          )}
+          symbol={octicons.location}
+        />
       </div>
     )
   }
@@ -585,4 +598,34 @@ export class ExpandableCommitSummary extends React.Component<
       </div>
     )
   }
+}
+
+/** Text that another tool reads to find the commit and the selected file. */
+function getCommitLocation(
+  repository: Repository,
+  sha: string,
+  selectedFile: CommittedFileChange | null
+) {
+  const lines = [
+    `Repository: ${replaceHomeDirWithTilde(repository.path)}`,
+    `Commit: ${sha}`,
+  ]
+
+  if (selectedFile !== null) {
+    lines.push(`File: ${Path.normalize(selectedFile.path)}`)
+  }
+
+  return lines.join('\n')
+}
+
+function replaceHomeDirWithTilde(path: string) {
+  const homeDir = Os.homedir()
+
+  if (path === homeDir) {
+    return '~'
+  }
+
+  return path.startsWith(homeDir + Path.sep)
+    ? '~' + path.slice(homeDir.length)
+    : path
 }
