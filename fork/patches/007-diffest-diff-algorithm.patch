@@ -1,0 +1,2088 @@
+diff --git a/app/src/ui/diff/side-by-side-diff.tsx b/app/src/ui/diff/side-by-side-diff.tsx
+index 992ebe2b87..c89be48ca8 100644
+--- a/app/src/ui/diff/side-by-side-diff.tsx
++++ b/app/src/ui/diff/side-by-side-diff.tsx
+@@ -19,8 +19,9 @@ import { Disposable } from 'event-kit'
+ import { DiffAlgorithm, diffAlgorithmStore } from './diff-algorithm'
+ import { getDiffestOverlay } from '../../lib/diffest/engine'
+ import { watchMoveHover } from './diffest-move-hover'
+-import type { IDiffestTokens, IInlineDeletion } from '../../lib/diffest/tokens'
++import type { IDiffestTokens } from '../../lib/diffest/tokens'
+ import { withInlineDeletions } from '../../lib/diffest/inline'
++import { withDiffestRows } from './diffest-rows'
+ import {
+   assertNever,
+   assertNonNullable,
+@@ -1970,87 +1971,6 @@ const getDiffRows = memoize(function (
+   return outputRows
+ })
+ 
+-/**
+- * The rows without the deleted rows of old lines Diffest reads as kept: a line
+- * it edited in place, re-indented, or joined onto another. Git shows such a
+- * line as removed and then added again. Diffest shows it once.
+- *
+- * In Unified, the old row goes, and any text Diffest reports as removed from it
+- * goes into the new row instead, just before what replaced it. That needs
+- * every removed piece of the old line to land on a row git shows as added.
+- * Where one cannot, the old row stays and nothing goes in, so no text is lost
+- * or shown twice.
+- *
+- * In Split, the old line already sits beside the new one, so only old rows with
+- * no mark at all go. `Modified` rows stay: pairing the old line with the new
+- * one is what Split is for.
+- */
+-const withDiffestRows = memoize(function (
+-  rows: ReadonlyArray<SimplifiedDiffRow>,
+-  overlay: IDiffestTokens | undefined,
+-  showSideBySideDiff: boolean
+-): IDiffestRows {
+-  if (overlay === undefined) {
+-    return { rows, inline: new Map() }
+-  }
+-
+-  if (showSideBySideDiff) {
+-    const unmarked = new Set(overlay.unmarkedBeforeLines)
+-    return { rows: withoutDeletedRows(rows, unmarked), inline: new Map() }
+-  }
+-
+-  // Row line numbers count from 1, Diffest's from 0.
+-  const deletedLines = new Set<number>()
+-  const addedLines = new Set<number>()
+-  for (const row of rows) {
+-    if (row.type === DiffRowType.Deleted) {
+-      deletedLines.add(row.data.lineNumber - 1)
+-    } else if (row.type === DiffRowType.Added) {
+-      addedLines.add(row.data.lineNumber - 1)
+-    }
+-  }
+-
+-  const blocked = new Set(
+-    overlay.inlineDeletions
+-      .filter(deletion => !addedLines.has(deletion.afterLine))
+-      .map(deletion => deletion.beforeLine)
+-  )
+-  const hidden = new Set(
+-    overlay.keptBeforeLines.filter(
+-      line => deletedLines.has(line) && !blocked.has(line)
+-    )
+-  )
+-
+-  const inline = new Map<number, Array<IInlineDeletion>>()
+-  for (const deletion of overlay.inlineDeletions) {
+-    if (hidden.has(deletion.beforeLine)) {
+-      const inLine = inline.get(deletion.afterLine) ?? []
+-      inLine.push(deletion)
+-      inline.set(deletion.afterLine, inLine)
+-    }
+-  }
+-
+-  return { rows: withoutDeletedRows(rows, hidden), inline }
+-})
+-
+-/** The rows the diff shows, and the removed text that goes into them. */
+-interface IDiffestRows {
+-  readonly rows: ReadonlyArray<SimplifiedDiffRow>
+-
+-  /** Removed text to put in, by the new line it goes into, counted from 0. */
+-  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
+-}
+-
+-function withoutDeletedRows(
+-  rows: ReadonlyArray<SimplifiedDiffRow>,
+-  lines: ReadonlySet<number>
+-): ReadonlyArray<SimplifiedDiffRow> {
+-  return rows.filter(
+-    row =>
+-      row.type !== DiffRowType.Deleted || !lines.has(row.data.lineNumber - 1)
+-  )
+-}
+-
+ /**
+  * Returns an array of rows with the needed data to render a side-by-side diff
+  * with them.
+diff --git a/app/src/lib/diffest/engine.ts b/app/src/lib/diffest/engine.ts
+new file mode 100644
+index 0000000000..2dd9c79b1d
+--- /dev/null
++++ b/app/src/lib/diffest/engine.ts
+@@ -0,0 +1,209 @@
++import * as Path from 'path'
++import { createHash } from 'crypto'
++import QuickLRU from 'quick-lru'
++import { ITokens } from '../highlighter/types'
++import { IFileContents } from '../../ui/diff/syntax-highlighting'
++import { getOldPathOrDefault } from '../get-old-path'
++import { IDiffestTokens } from './tokens'
++import type { DiffestResponse, IDiffestRequest } from './worker'
++
++/**
++ * The extensions Diffest has a parser for. It reads `.css` and `.html` with
++ * their own grammars and everything else as JavaScript, so a file outside this
++ * list would be read with the wrong grammar rather than not at all.
++ */
++const DiffestExtensions = new Set([
++  '.js',
++  '.jsx',
++  '.mjs',
++  '.cjs',
++  '.ts',
++  '.tsx',
++  '.mts',
++  '.cts',
++  '.css',
++  '.html',
++  '.htm',
++])
++
++/**
++ * Past this many lines, on either side, the file is left to git.
++ *
++ * Diffest's cost grows with about the cube of the line count: 150 lines take
++ * 0.2 s, 300 take 0.8 s, 600 take 6 s, and 2,259 take three minutes. It runs
++ * in a worker, so the UI does not wait, but marks that arrive minutes late
++ * help nobody. This cap keeps the wait to a few seconds.
++ */
++const MaxDiffestLines = 600
++
++/**
++ * The answers for the last few files, `null` included. A click back to a file
++ * you just left is then instant, and a file Diffest cannot read is not read
++ * again.
++ */
++const overlayCache = new QuickLRU<string, IDiffestTokens | null>({
++  maxSize: 20,
++})
++
++/**
++ * Diffest's marks for a file, or `null` when there are none.
++ *
++ * Every way this can decline is a `null`, because to the caller each one means
++ * the same thing: show the git diff, say nothing.
++ */
++export async function getDiffestOverlay(
++  contents: IFileContents,
++  signal: AbortSignal
++): Promise<IDiffestTokens | null> {
++  const { file, oldContents, newContents } = contents
++  const path = file.path
++  const ext = Path.extname(path).toLowerCase()
++
++  if (!DiffestExtensions.has(ext)) {
++    return null
++  }
++
++  // An added or deleted file has nothing on one side, and Diffest would only
++  // say again what the `+` or `-` on every line already says.
++  if (oldContents.length === 0 || newContents.length === 0) {
++    return null
++  }
++
++  // A rename can change the language, and both sides are read with one
++  // grammar.
++  if (Path.extname(getOldPathOrDefault(file)).toLowerCase() !== ext) {
++    return null
++  }
++
++  // The new side came back at the 1MB cap, which means it was cut mid-line.
++  if (!contents.canBeExpanded) {
++    return null
++  }
++
++  if (
++    oldContents.length > MaxDiffestLines ||
++    newContents.length > MaxDiffestLines
++  ) {
++    return null
++  }
++
++  // Lines were split on `/\r?\n/` on the way in, so line i of this text is
++  // line i + 1 in the diff view.
++  const before = oldContents.join('\n')
++  const after = newContents.join('\n')
++
++  const key = cacheKey(path, before, after)
++  const cached = overlayCache.get(key)
++  if (cached !== undefined) {
++    return cached
++  }
++
++  let response: DiffestResponse
++  try {
++    response = await runInWorker({ before, after, ext }, signal)
++  } catch (error) {
++    // A stopped run is not an answer, so it is not cached: the next look at
++    // this file has to run again.
++    if (!signal.aborted) {
++      log.debug(`[diffest] the worker failed on ${path}`, error)
++    }
++    return null
++  }
++
++  const overlay = toOverlay(path, response)
++  overlayCache.set(key, overlay)
++  return overlay
++}
++
++/**
++ * Runs one diff in a worker of its own. When the signal fires, the worker is
++ * terminated at once: a file switch then costs nothing, where a shared worker
++ * would first finish seconds of work nobody waits for.
++ */
++function runInWorker(
++  request: IDiffestRequest,
++  signal: AbortSignal
++): Promise<DiffestResponse> {
++  return new Promise((resolve, reject) => {
++    if (signal.aborted) {
++      reject(new Error('aborted'))
++      return
++    }
++
++    // The renderer bundle exports through `module.exports`, and a worker has no
++    // `module`. Without this, the worker's last line throws, and every run
++    // fails before it can answer.
++    const worker = new Worker(
++      /* webpackEntryOptions: { library: { type: "var", name: "diffestWorker" } } */
++      new URL('./worker', import.meta.url)
++    )
++
++    const stop = () => {
++      worker.terminate()
++      reject(new Error('aborted'))
++    }
++    signal.addEventListener('abort', stop, { once: true })
++
++    const finish = () => {
++      signal.removeEventListener('abort', stop)
++      worker.terminate()
++    }
++
++    worker.onmessage = (event: MessageEvent<DiffestResponse>) => {
++      finish()
++      resolve(event.data)
++    }
++
++    worker.onerror = event => {
++      finish()
++      reject(event.error ?? new Error(event.message))
++    }
++
++    worker.postMessage(request)
++  })
++}
++
++function toOverlay(
++  path: string,
++  response: DiffestResponse
++): IDiffestTokens | null {
++  if (response.kind === 'error') {
++    log.debug(`[diffest] could not diff ${path}: ${response.message}`)
++    return null
++  }
++
++  const overlay = response.tokens
++  if (overlay === null) {
++    log.debug(`[diffest] the view does not match the text of ${path}`)
++    return null
++  }
++
++  // A view with no marks at all is treated as no answer. When there is no
++  // overlay, the view gives the file back to git's colours; an overlay that
++  // paints nothing would leave the diff with no marks.
++  if (isEmpty(overlay.before) && isEmpty(overlay.after)) {
++    return null
++  }
++
++  return overlay
++}
++
++function isEmpty(tokens: ITokens): boolean {
++  for (const _ in tokens) {
++    return false
++  }
++  return true
++}
++
++/**
++ * Keyed on the text that was diffed, not on the file. `file.id` stays the same
++ * across an edit, and marks at offsets the text no longer has are worse than
++ * none.
++ */
++function cacheKey(path: string, before: string, after: string): string {
++  const hash = createHash('sha1')
++  hash.update(before)
++  hash.update('\0')
++  hash.update(after)
++  return `${path}\0${hash.digest('hex')}`
++}
+diff --git a/app/src/lib/diffest/inline.ts b/app/src/lib/diffest/inline.ts
+new file mode 100644
+index 0000000000..b6125fa378
+--- /dev/null
++++ b/app/src/lib/diffest/inline.ts
+@@ -0,0 +1,73 @@
++import { ILineTokens } from '../highlighter/types'
++import type { IInlineDeletion } from './tokens'
++
++/**
++ * A new line with the text Diffest reports as removed from it put back in,
++ * painted as deleted, just before what replaced it. This is how Diffest's own
++ * page draws a changed line: once, with the old text and the new side by side.
++ *
++ * Every token after an inserted text moves right by its length. A token that
++ * an insertion falls inside is cut in two around it.
++ */
++export function withInlineDeletions(
++  content: string,
++  layers: ReadonlyArray<ILineTokens>,
++  deletions: ReadonlyArray<IInlineDeletion>
++): { readonly content: string; readonly tokens: ReadonlyArray<ILineTokens> } {
++  const sorted = [...deletions].sort((a, b) => a.column - b.column)
++  const inserted: ILineTokens = {}
++  let text = ''
++  let from = 0
++  let shift = 0
++
++  for (const { column, text: removed } of sorted) {
++    text += content.slice(from, column) + removed
++    inserted[column + shift] = { length: removed.length, token: 'df-deleted' }
++    shift += removed.length
++    from = column
++  }
++  text += content.slice(from)
++
++  return {
++    content: text,
++    tokens: [...layers.map(layer => shiftLayer(layer, sorted)), inserted],
++  }
++}
++
++function shiftLayer(
++  layer: ILineTokens,
++  deletions: ReadonlyArray<IInlineDeletion>
++): ILineTokens {
++  const shifted: ILineTokens = {}
++
++  // Text inserted at a column goes in front of the character there, so a
++  // token that starts at that column moves with the rest.
++  const shiftAt = (column: number) =>
++    deletions
++      .filter(deletion => deletion.column <= column)
++      .reduce((sum, deletion) => sum + deletion.text.length, 0)
++
++  for (const key in layer) {
++    const start = Number(key)
++    const { length, token } = layer[key]
++    const end = start + length
++    let pieceStart = start
++
++    for (const { column } of deletions) {
++      if (column > pieceStart && column < end) {
++        shifted[pieceStart + shiftAt(pieceStart)] = {
++          length: column - pieceStart,
++          token,
++        }
++        pieceStart = column
++      }
++    }
++
++    shifted[pieceStart + shiftAt(pieceStart)] = {
++      length: end - pieceStart,
++      token,
++    }
++  }
++
++  return shifted
++}
+diff --git a/app/src/lib/diffest/tokens.ts b/app/src/lib/diffest/tokens.ts
+new file mode 100644
+index 0000000000..2b301dc726
+--- /dev/null
++++ b/app/src/lib/diffest/tokens.ts
+@@ -0,0 +1,475 @@
++import { drawn, lineSide, moves } from 'diffest'
++import type { DiffView, Segment } from 'diffest'
++import { ILineTokens, ITokens } from '../highlighter/types'
++
++/** What Diffest marked in one file, in the shape the diff view paints with. */
++export interface IDiffestTokens {
++  readonly before: ITokens
++  readonly after: ITokens
++
++  /**
++   * The lines of the old version, counted from 0, that hold text but no mark.
++   * Diffest reads them as kept, so a row git shows for one as deleted says
++   * something Diffest does not.
++   */
++  readonly unmarkedBeforeLines: ReadonlyArray<number>
++
++  /**
++   * The lines of the old version, counted from 0, whose text all belongs to
++   * lines Diffest keeps: edited in place, re-indented, or joined onto another.
++   * Unlike an unmarked line, such a line can hold text Diffest reports as
++   * removed. `inlineDeletions` says where that text goes in the new line.
++   */
++  readonly keptBeforeLines: ReadonlyArray<number>
++
++  /** Text Diffest reports as removed from lines it keeps. */
++  readonly inlineDeletions: ReadonlyArray<IInlineDeletion>
++
++  /**
++   * The row of Diffest's view each old line starts on, by line counted from 0.
++   * `null` for a line with no text, which has no place of its own in the view.
++   */
++  readonly beforeLineRows: ReadonlyArray<number | null>
++
++  /** The same, for each new line. */
++  readonly afterLineRows: ReadonlyArray<number | null>
++}
++
++/**
++ * Text removed from a line Diffest keeps. Diffest's own page writes it inside
++ * the new line, just before what replaced it: `{~order~unsorted~}.push(x)`
++ * reads as `order`, then `unsorted`, then `.push(x)` once.
++ */
++export interface IInlineDeletion {
++  /** The old line the text came from, counted from 0. */
++  readonly beforeLine: number
++
++  /** The new line it goes into, counted from 0. */
++  readonly afterLine: number
++
++  /** The column of the new line that the text goes in front of. */
++  readonly column: number
++
++  readonly text: string
++}
++
++type Side = 'before' | 'after'
++
++/** A run of text one side of the view holds, and the class it is painted with. */
++interface IPiece {
++  readonly text: string
++  readonly paint: string | null
++
++  /** Whether the piece belongs to a line Diffest keeps. */
++  readonly kept: boolean
++
++  /** The row of the view the piece is on. */
++  readonly row: number
++
++  /** On the old side: text that also goes into the new line. */
++  readonly anchor?: boolean
++
++  /** On the new side: removed text that goes in here. It holds no file text. */
++  readonly inline?: string
++}
++
++/** One side of the view, placed on the file. */
++interface IPlacement {
++  /** The class on each character of the file. */
++  readonly paints: ReadonlyArray<string | null>
++
++  /** For each character the view matched, whether a kept line holds it. */
++  readonly kept: ReadonlyArray<boolean | undefined>
++
++  /** For each character the view matched, the row of the view it is on. */
++  readonly rows: ReadonlyArray<number | undefined>
++
++  /** Where each anchor or inline piece landed, in the order they came. */
++  readonly anchors: ReadonlyArray<number>
++}
++
++/**
++ * Diffest's marks, placed on the lines of the real file.
++ *
++ * The lines of a view are not the lines of the file. The view gives back both
++ * versions only as a formatter would read them: Diffest breaks a block open
++ * over several lines, or writes one back onto a single line, and it does not
++ * keep the comma before a closing bracket. So each side of the view is read
++ * together with the file, character by character, with whitespace skipped on
++ * both and a stray `,` or `;` skipped on either. Each mark then lands where its
++ * text is in the file.
++ *
++ * Returns `null` when the two texts do not agree. That is a view this does not
++ * understand, and plain git is better than marks in the wrong place.
++ */
++export function tokensFromView(
++  view: DiffView,
++  before: string,
++  after: string
++): IDiffestTokens | null {
++  const movePaints = getMovePaints(view)
++  const afterPieces = getPieces(view, 'after', movePaints)
++  const old = placePieces(getPieces(view, 'before', movePaints), before)
++  const now = placePieces(afterPieces, after)
++
++  // Each removed text has an anchor on both sides, so the two lists pair up in
++  // order.
++  if (
++    old === null ||
++    now === null ||
++    old.anchors.length !== now.anchors.length
++  ) {
++    return null
++  }
++
++  const removed = afterPieces.flatMap(piece =>
++    piece.inline === undefined ? [] : [piece.inline]
++  )
++
++  return {
++    before: getTokens(before, old.paints),
++    after: getTokens(after, now.paints),
++    unmarkedBeforeLines: getUnmarkedLines(before, old.paints),
++    keptBeforeLines: getKeptLines(before, old.kept),
++    beforeLineRows: getLineRows(before, old.rows),
++    afterLineRows: getLineRows(after, now.rows),
++    inlineDeletions: removed.map((text, index) => {
++      const { line, column } = locate(after, now.anchors[index])
++      const beforeLine = locate(before, old.anchors[index]).line
++      return { beforeLine, afterLine: line, column, text }
++    }),
++  }
++}
++
++/**
++ * The class for each end of each move, by the view row it is on. Both ends of
++ * a move share the `df-m-` number, so pointing at one can light the other. The
++ * end the line left also gets `df-moved-from`, which is dimmed.
++ */
++function getMovePaints(view: DiffView): Map<number, string> {
++  const paints = new Map<number, string>()
++
++  moves(view).forEach(({ to, from }, index) => {
++    paints.set(to, `df-moved df-m-${index}`)
++    paints.set(from, `df-moved df-moved-from df-m-${index}`)
++  })
++
++  return paints
++}
++
++/**
++ * The text one side of the view holds, in order. The rules for which segment
++ * gives which text are those of `sides.ts` in the framework, which is how the
++ * view gives back each version.
++ */
++function getPieces(
++  view: DiffView,
++  side: Side,
++  movePaints: Map<number, string>
++): ReadonlyArray<IPiece> {
++  const pieces = new Array<IPiece>()
++
++  view.forEach((line, row) => {
++    const held = lineSide(line)
++    if (held !== 'both' && held !== side) {
++      return
++    }
++
++    const both = held === 'both'
++    // An old line the page gives no row, such as the seat a carried line
++    // left, is kept as well.
++    const kept = both || !drawn(line)
++
++    // The mark of a move goes on the text the line kept. The line's own marks
++    // say what it changed on the way.
++    const movePaint = movePaints.get(row) ?? null
++
++    for (const segment of line.segments) {
++      pieces.push(
++        ...getSegmentPieces(segment, side, row, kept, both, movePaint)
++      )
++    }
++
++    pieces.push({ text: '\n', paint: null, kept, row })
++  })
++
++  return pieces
++}
++
++function getSegmentPieces(
++  segment: Segment,
++  side: Side,
++  row: number,
++  kept: boolean,
++  both: boolean,
++  movePaint: string | null
++): ReadonlyArray<IPiece> {
++  switch (segment.kind) {
++    case 'same':
++      return [{ text: segment.text, paint: movePaint, kept, row }]
++    case 'added': {
++      const paint = segment.quiet ? null : 'df-added'
++      return side === 'after' ? [{ text: segment.text, paint, kept, row }] : []
++    }
++    case 'deleted': {
++      // Text removed from a line that stays also goes into the new line.
++      const inline = both && segment.quiet !== true
++      if (side === 'after') {
++        return inline ? [getInlinePiece(segment.text, row)] : []
++      }
++      const paint = segment.quiet ? null : 'df-deleted'
++      return [{ text: segment.text, paint, kept, row, anchor: inline }]
++    }
++    case 'changed': {
++      // A carried change is counted where it used to be, where the view
++      // writes its old text as a quiet deletion.
++      if (side === 'before') {
++        const paint = 'df-deleted'
++        return segment.carried
++          ? []
++          : [{ text: segment.before, paint, kept, row, anchor: both }]
++      }
++      const changed = { text: segment.after, paint: 'df-changed', kept, row }
++      return both && !segment.carried
++        ? [getInlinePiece(segment.before, row), changed]
++        : [changed]
++    }
++  }
++}
++
++function getInlinePiece(text: string, row: number): IPiece {
++  return { text: '', paint: null, kept: true, row, inline: text }
++}
++
++/** The pieces of one side, placed on the file. */
++function placePieces(
++  pieces: ReadonlyArray<IPiece>,
++  file: string
++): IPlacement | null {
++  const paints = new Array<string | null>(file.length).fill(null)
++  const kept = new Array<boolean | undefined>(file.length)
++  const rows = new Array<number | undefined>(file.length)
++  const anchors = new Array<number>()
++  let at = 0
++  // Whitespace the view passed since the last character it matched. Removed
++  // text goes in after as much of the file's whitespace, so `x = 2` becoming
++  // `x = 3` reads `x = 23`, not `x =2 3`.
++  let spaces = 0
++
++  for (const piece of pieces) {
++    if (piece.inline !== undefined) {
++      let insertAt = at
++      for (let left = spaces; left > 0 && isSpace(file[insertAt]); left--) {
++        insertAt++
++      }
++      anchors.push(insertAt)
++      continue
++    }
++
++    let previous = -1
++    let first = -1
++
++    for (const char of piece.text) {
++      if (isSpace(char)) {
++        spaces++
++        continue
++      }
++
++      at = skipSpace(file, at)
++      while (at < file.length && file[at] !== char && isStray(file[at])) {
++        at = skipSpace(file, at + 1)
++      }
++
++      if (file[at] !== char) {
++        if (isStray(char)) {
++          continue
++        }
++        return null
++      }
++
++      if (piece.paint !== null) {
++        // Whitespace between two characters of one piece is painted with them,
++        // so `a b` reads as one mark. Not across a line break, or the
++        // indentation of the next line would be painted too.
++        const gap = previous === -1 ? '' : file.slice(previous, at)
++        const from = previous !== -1 && !gap.includes('\n') ? previous : at
++        paints.fill(piece.paint, from, at + 1)
++      }
++
++      kept[at] = piece.kept
++      rows[at] = piece.row
++      if (first === -1) {
++        first = at
++      }
++      previous = at
++      spaces = 0
++      at++
++    }
++
++    if (piece.anchor === true) {
++      anchors.push(first === -1 ? skipSpace(file, at) : first)
++    }
++  }
++
++  // What is left of the file has to be what a formatter writes and nothing
++  // else, or the view left out text the file has.
++  while (at < file.length && (isSpace(file[at]) || isStray(file[at]))) {
++    at++
++  }
++
++  return at === file.length ? { paints, kept, rows, anchors } : null
++}
++
++/** Runs of one class on one line, keyed by line and by the column they start at. */
++function getTokens(
++  file: string,
++  paints: ReadonlyArray<string | null>
++): ITokens {
++  const tokens: ITokens = {}
++  let line = 0
++  let column = 0
++  let at = 0
++
++  while (at < file.length) {
++    if (file[at] === '\n') {
++      line++
++      column = 0
++      at++
++      continue
++    }
++
++    const paint = paints[at]
++    let end = at + 1
++    while (end < file.length && file[end] !== '\n' && paints[end] === paint) {
++      end++
++    }
++
++    if (paint !== null) {
++      let lineTokens: ILineTokens | undefined = tokens[line]
++      if (lineTokens === undefined) {
++        lineTokens = {}
++        tokens[line] = lineTokens
++      }
++      lineTokens[column] = { length: end - at, token: paint }
++    }
++
++    column += end - at
++    at = end
++  }
++
++  return tokens
++}
++
++/** The lines, counted from 0, that hold text and no mark. */
++function getUnmarkedLines(
++  file: string,
++  paints: ReadonlyArray<string | null>
++): ReadonlyArray<number> {
++  const lines = new Array<number>()
++  let line = 0
++  let hasText = false
++  let hasMark = false
++
++  for (let at = 0; at <= file.length; at++) {
++    if (at === file.length || file[at] === '\n') {
++      // A blank line has no text to say either way, so git keeps it.
++      if (hasText && !hasMark) {
++        lines.push(line)
++      }
++      line++
++      hasText = false
++      hasMark = false
++      continue
++    }
++
++    hasText ||= !isSpace(file[at])
++    hasMark ||= paints[at] !== null
++  }
++
++  return lines
++}
++
++/** The lines, counted from 0, whose matched text all belongs to kept lines. */
++function getKeptLines(
++  file: string,
++  kept: ReadonlyArray<boolean | undefined>
++): ReadonlyArray<number> {
++  const lines = new Array<number>()
++  let line = 0
++  let hasText = false
++  let allKept = true
++
++  for (let at = 0; at <= file.length; at++) {
++    if (at === file.length || file[at] === '\n') {
++      if (hasText && allKept) {
++        lines.push(line)
++      }
++      line++
++      hasText = false
++      allKept = true
++      continue
++    }
++
++    const owner = kept[at]
++    if (owner !== undefined) {
++      hasText = true
++      allKept &&= owner
++    }
++  }
++
++  return lines
++}
++
++/** The line and column of an offset into the file, both counted from 0. */
++function locate(
++  file: string,
++  offset: number
++): { readonly line: number; readonly column: number } {
++  let line = 0
++  let lineStart = 0
++
++  for (let at = file.indexOf('\n'); at !== -1 && at < offset; ) {
++    line++
++    lineStart = at + 1
++    at = file.indexOf('\n', at + 1)
++  }
++
++  return { line, column: offset - lineStart }
++}
++
++/** The view row each line of the file starts on; `null` for a line with no text. */
++function getLineRows(
++  file: string,
++  rows: ReadonlyArray<number | undefined>
++): ReadonlyArray<number | null> {
++  const lines = new Array<number | null>()
++  let first: number | null = null
++
++  for (let at = 0; at <= file.length; at++) {
++    if (at === file.length || file[at] === '\n') {
++      lines.push(first)
++      first = null
++      continue
++    }
++
++    first ??= rows[at] ?? null
++  }
++
++  return lines
++}
++
++function skipSpace(text: string, at: number): number {
++  while (at < text.length && isSpace(text[at])) {
++    at++
++  }
++  return at
++}
++
++function isSpace(char: string | undefined): boolean {
++  return char !== undefined && /\s/.test(char)
++}
++
++/** What the view may leave out or add where the file does not: a trailing `,` or `;`. */
++function isStray(char: string): boolean {
++  return char === ',' || char === ';'
++}
+diff --git a/app/src/lib/diffest/worker.ts b/app/src/lib/diffest/worker.ts
+new file mode 100644
+index 0000000000..33bc8f939f
+--- /dev/null
++++ b/app/src/lib/diffest/worker.ts
+@@ -0,0 +1,31 @@
++import diff from 'diffest'
++import { IDiffestTokens, tokensFromView } from './tokens'
++
++/** What the engine sends: the two versions of one file and its extension. */
++export interface IDiffestRequest {
++  readonly before: string
++  readonly after: string
++  readonly ext: string
++}
++
++/** What the worker sends back: the marks, or why there are none. */
++export type DiffestResponse =
++  | { readonly kind: 'tokens'; readonly tokens: IDiffestTokens | null }
++  | { readonly kind: 'error'; readonly message: string }
++
++// The renderer's types describe a window, whose `postMessage` needs a target
++// origin. This runs in a worker, where it does not.
++const scope = self as unknown as Worker
++
++scope.onmessage = (event: MessageEvent<IDiffestRequest>) => {
++  scope.postMessage(respond(event.data))
++}
++
++function respond({ before, after, ext }: IDiffestRequest): DiffestResponse {
++  try {
++    const view = diff(before, after, ext)
++    return { kind: 'tokens', tokens: tokensFromView(view, before, after) }
++  } catch (error) {
++    return { kind: 'error', message: String(error) }
++  }
++}
+diff --git a/app/src/ui/diff/diff-algorithm.ts b/app/src/ui/diff/diff-algorithm.ts
+new file mode 100644
+index 0000000000..f6f5012362
+--- /dev/null
++++ b/app/src/ui/diff/diff-algorithm.ts
+@@ -0,0 +1,89 @@
++import { Disposable, Emitter } from 'event-kit'
++import { getEnum } from '../../lib/local-storage'
++
++/** Which algorithm decides what a diff says changed. */
++export enum DiffAlgorithm {
++  /** What git reports: whole lines added and removed. */
++  Git = 'git',
++  /**
++   * Diffest's marks painted on top of git's lines, so a changed value shows up
++   * as that value rather than as the line it sits on.
++   */
++  Diffest = 'diffest',
++}
++
++const diffAlgorithmKey = 'diff-algorithm'
++
++/**
++ * Which algorithm the diff view should use, and a way to hear about it
++ * changing.
++ *
++ * This deliberately sits outside the app store. Every other diff setting is
++ * threaded from `AppStore` through `IAppState`, `Dispatcher`, `repository.tsx`,
++ * and four separate diff hosts before it reaches `DiffOptions` — around six
++ * files of pure prop passing. Only two components care about this one, and both
++ * can read it where they stand, in the same way `dragAndDropManager` is read
++ * directly by the components that need it.
++ */
++class DiffAlgorithmStore {
++  private readonly emitter = new Emitter()
++  private current =
++    getEnum(diffAlgorithmKey, DiffAlgorithm) ?? DiffAlgorithm.Git
++
++  public get value(): DiffAlgorithm {
++    return this.current
++  }
++
++  public set(value: DiffAlgorithm) {
++    if (value === this.current) {
++      return
++    }
++
++    this.current = value
++    localStorage.setItem(diffAlgorithmKey, value)
++    this.emitter.emit('changed', value)
++  }
++
++  public toggle() {
++    this.set(
++      this.current === DiffAlgorithm.Git
++        ? DiffAlgorithm.Diffest
++        : DiffAlgorithm.Git
++    )
++  }
++
++  public onDidChange(fn: (value: DiffAlgorithm) => void): Disposable {
++    return this.emitter.on('changed', fn)
++  }
++}
++
++export const diffAlgorithmStore = new DiffAlgorithmStore()
++
++/** The keys that switch between the two algorithms, as the popover shows them. */
++export const diffAlgorithmShortcut = __DARWIN__ ? '⇧⌘\\' : 'Ctrl+Shift+\\'
++
++// One listener for the window, not one for each diff view. Two diffs can be on
++// screen at once — the pull request dialog over the changes list — and if each
++// toggled on the same key press, the second would undo the first.
++window.addEventListener('keydown', onToggleShortcut)
++
++function onToggleShortcut(event: KeyboardEvent) {
++  if (event.defaultPrevented || event.repeat) {
++    return
++  }
++
++  const isCmdOrCtrl = __DARWIN__
++    ? event.metaKey && !event.ctrlKey
++    : event.ctrlKey
++
++  // `code` and not `key`: with Shift held, `key` is `|` on a US layout.
++  if (
++    isCmdOrCtrl &&
++    event.shiftKey &&
++    !event.altKey &&
++    event.code === 'Backslash'
++  ) {
++    event.preventDefault()
++    diffAlgorithmStore.toggle()
++  }
++}
+diff --git a/app/src/ui/diff/diffest-move-hover.ts b/app/src/ui/diff/diffest-move-hover.ts
+new file mode 100644
+index 0000000000..2e9ebd3323
+--- /dev/null
++++ b/app/src/ui/diff/diffest-move-hover.ts
+@@ -0,0 +1,60 @@
++let nextContainerId = 0
++
++/**
++ * Lights both ends of a move at full opacity while the pointer is on either
++ * one. The end the line left is otherwise dimmed.
++ *
++ * The two ends sit in different rows, and the list is virtualized: rows are
++ * made and thrown away as it scrolls, so a class set on the spans would go
++ * with them. A style rule for the hovered move also applies to rows rendered
++ * after it was written.
++ *
++ * Returns a function that stops watching.
++ */
++export function watchMoveHover(container: HTMLElement): () => void {
++  const id = String(nextContainerId++)
++  const style = document.createElement('style')
++  let litMove: string | null = null
++
++  container.dataset.diffestId = id
++  document.head.appendChild(style)
++
++  const light = (move: string | null) => {
++    if (move === litMove) {
++      return
++    }
++
++    litMove = move
++    // The class is written twice to outrank the rule that dims the old end.
++    style.textContent =
++      move === null
++        ? ''
++        : `[data-diffest-id="${id}"] .cm-${move}.cm-${move} { opacity: 1; }`
++  }
++
++  const onMouseOver = (event: MouseEvent) => {
++    const end =
++      event.target instanceof Element
++        ? event.target.closest('[class*="cm-df-m-"]')
++        : null
++
++    light(end === null ? null : getMove(end))
++  }
++
++  const onMouseLeave = () => light(null)
++
++  container.addEventListener('mouseover', onMouseOver)
++  container.addEventListener('mouseleave', onMouseLeave)
++
++  return () => {
++    container.removeEventListener('mouseover', onMouseOver)
++    container.removeEventListener('mouseleave', onMouseLeave)
++    style.remove()
++  }
++}
++
++/** The `df-m-<n>` class of a span that is an end of a move. */
++function getMove(element: Element): string | null {
++  const match = /(?:^|\s)cm-(df-m-\d+)(?=\s|$)/.exec(element.className)
++  return match === null ? null : match[1]
++}
+diff --git a/app/src/ui/diff/diffest-rows.ts b/app/src/ui/diff/diffest-rows.ts
+new file mode 100644
+index 0000000000..93a2ee44dd
+--- /dev/null
++++ b/app/src/ui/diff/diffest-rows.ts
+@@ -0,0 +1,333 @@
++import memoize from 'memoize-one'
++import { DiffRowType, SimplifiedDiffRow } from './diff-helpers'
++import type { IDiffestTokens, IInlineDeletion } from '../../lib/diffest/tokens'
++
++/** The rows the diff shows, and the removed text that goes into them. */
++export interface IDiffestRows {
++  readonly rows: ReadonlyArray<SimplifiedDiffRow>
++
++  /** Removed text to put in, by the new line it goes into, counted from 0. */
++  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
++}
++
++type Side = 'before' | 'after'
++type DeletedRow = Extract<SimplifiedDiffRow, { type: DiffRowType.Deleted }>
++type AddedRow = Extract<SimplifiedDiffRow, { type: DiffRowType.Added }>
++
++/** A row, and the place Diffest's view gives it. */
++interface IPlacedRow {
++  readonly row: SimplifiedDiffRow
++  readonly key: number
++
++  /** Whether the place is the row's own, not borrowed from a neighbour. */
++  readonly exact: boolean
++}
++
++/**
++ * Git's rows, shown the way Diffest's view shows them.
++ *
++ * Git makes the hunks, and each hunk keeps its place, so hunk expansion works
++ * as before. Inside a hunk the rows follow the view: git lists every old line
++ * of a change before every new one, while Diffest puts a removed line where it
++ * belongs, such as the rest of a call right after the line that replaced it.
++ *
++ * In Unified, an old line Diffest keeps has no row of its own. The text Diffest
++ * reports as removed from it goes into the new row, just before what replaced
++ * it. In Split, an old line and a new line sit side by side when Diffest puts
++ * them on one view line, not when git lists them at the same position.
++ */
++export const withDiffestRows = memoize(function (
++  rows: ReadonlyArray<SimplifiedDiffRow>,
++  overlay: IDiffestTokens | undefined,
++  showSideBySideDiff: boolean
++): IDiffestRows {
++  if (overlay === undefined) {
++    return { rows, inline: new Map() }
++  }
++
++  if (showSideBySideDiff) {
++    return {
++      rows: bySection(rows, section => pairInViewOrder(section, overlay)),
++      inline: new Map(),
++    }
++  }
++
++  const { shown, inline } = withRemovedTextInline(rows, overlay)
++  const inOrder = (section: ReadonlyArray<SimplifiedDiffRow>) =>
++    inViewOrder(section, overlay).map(placed => placed.row)
++
++  return { rows: bySection(shown, inOrder), inline }
++})
++
++/**
++ * Hides the old row of each line Diffest keeps, and hands the text it reports
++ * as removed to the new row. That needs every removed piece of the old line to
++ * land on a row git shows as added. Where one cannot, the old row stays and
++ * nothing goes in, so no text is lost or shown twice.
++ */
++function withRemovedTextInline(
++  rows: ReadonlyArray<SimplifiedDiffRow>,
++  overlay: IDiffestTokens
++): {
++  readonly shown: ReadonlyArray<SimplifiedDiffRow>
++  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
++} {
++  // Row line numbers count from 1, Diffest's from 0.
++  const deletedLines = new Set<number>()
++  const addedLines = new Set<number>()
++  for (const row of rows) {
++    if (row.type === DiffRowType.Deleted) {
++      deletedLines.add(row.data.lineNumber - 1)
++    } else if (row.type === DiffRowType.Added) {
++      addedLines.add(row.data.lineNumber - 1)
++    }
++  }
++
++  const blocked = new Set(
++    overlay.inlineDeletions
++      .filter(deletion => !addedLines.has(deletion.afterLine))
++      .map(deletion => deletion.beforeLine)
++  )
++  const hidden = new Set(
++    overlay.keptBeforeLines.filter(
++      line => deletedLines.has(line) && !blocked.has(line)
++    )
++  )
++
++  const inline = new Map<number, Array<IInlineDeletion>>()
++  for (const deletion of overlay.inlineDeletions) {
++    if (hidden.has(deletion.beforeLine)) {
++      const inLine = inline.get(deletion.afterLine) ?? []
++      inLine.push(deletion)
++      inline.set(deletion.afterLine, inLine)
++    }
++  }
++
++  return { shown: withoutDeletedRows(rows, hidden), inline }
++}
++
++/**
++ * Split: git's pairs taken apart and paired again the way Diffest pairs them.
++ * An old line with no mark and no partner is hidden: Diffest reads it as kept,
++ * and alone on the left it would read as removed.
++ */
++function pairInViewOrder(
++  section: ReadonlyArray<SimplifiedDiffRow>,
++  overlay: IDiffestTokens
++): ReadonlyArray<SimplifiedDiffRow> {
++  const halves = section.flatMap((row): ReadonlyArray<SimplifiedDiffRow> => {
++    if (row.type !== DiffRowType.Modified) {
++      return [row]
++    }
++    const { beforeData, afterData, hunkStartLine } = row
++    return [
++      { type: DiffRowType.Deleted, data: beforeData, hunkStartLine },
++      { type: DiffRowType.Added, data: afterData, hunkStartLine },
++    ]
++  })
++
++  const unmarked = new Set(overlay.unmarkedBeforeLines)
++  const placed = inViewOrder(halves, overlay)
++  const output = new Array<SimplifiedDiffRow>()
++
++  for (let start = 0; start < placed.length; ) {
++    let end = start + 1
++    while (end < placed.length && placed[end].key === placed[start].key) {
++      end++
++    }
++    output.push(...pairOneViewRow(placed.slice(start, end), unmarked))
++    start = end
++  }
++
++  return output
++}
++
++/** The rows Diffest puts on one view line, with old and new side by side. */
++function pairOneViewRow(
++  group: ReadonlyArray<IPlacedRow>,
++  unmarked: ReadonlySet<number>
++): ReadonlyArray<SimplifiedDiffRow> {
++  const olds = new Array<DeletedRow>()
++  const news = new Array<AddedRow>()
++  // A line that only borrowed its place is not on this view line.
++  for (const { row, exact } of group) {
++    if (exact && row.type === DiffRowType.Deleted) {
++      olds.push(row)
++    } else if (exact && row.type === DiffRowType.Added) {
++      news.push(row)
++    }
++  }
++
++  const pairs = Math.min(olds.length, news.length)
++  const paired = new Set<SimplifiedDiffRow>([
++    ...olds.slice(0, pairs),
++    ...news.slice(0, pairs),
++  ])
++  const output: Array<SimplifiedDiffRow> = olds
++    .slice(0, pairs)
++    .map((old, index) => ({
++      type: DiffRowType.Modified,
++      beforeData: old.data,
++      afterData: news[index].data,
++      hunkStartLine: old.hunkStartLine,
++    }))
++
++  for (const { row } of group) {
++    if (paired.has(row)) {
++      continue
++    }
++    if (
++      row.type === DiffRowType.Deleted &&
++      unmarked.has(row.data.lineNumber - 1)
++    ) {
++      continue
++    }
++    output.push(row)
++  }
++
++  return output
++}
++
++/**
++ * The rows between two hunk headers, in the order of Diffest's view. The view
++ * lists each version's lines in order, so each side keeps git's order and only
++ * the two sides interleave. On a tie, the old line goes first.
++ */
++function inViewOrder(
++  section: ReadonlyArray<SimplifiedDiffRow>,
++  overlay: IDiffestTokens
++): ReadonlyArray<IPlacedRow> {
++  const own = section.map(row => getViewRow(row, overlay))
++  const keys = withBorrowedKeys(section, own)
++
++  return section
++    .map((row, index) => ({ row, index, key: keys[index] ?? -1 }))
++    .sort(
++      (a, b) =>
++        a.key - b.key || getRank(a.row) - getRank(b.row) || a.index - b.index
++    )
++    .map(({ row, index, key }) => ({
++      row,
++      key,
++      exact: own[index] !== undefined,
++    }))
++}
++
++/**
++ * A line with no text has no place of its own in the view. It borrows the place
++ * of the line before it on the same side, so it stays beside it. One at the
++ * start borrows from the line after it.
++ */
++function withBorrowedKeys(
++  section: ReadonlyArray<SimplifiedDiffRow>,
++  own: ReadonlyArray<number | undefined>
++): ReadonlyArray<number | undefined> {
++  const keys = [...own]
++
++  for (const side of ['before', 'after'] as const) {
++    const indices = section.flatMap((row, index) =>
++      isOnSide(row, side) ? [index] : []
++    )
++
++    let last: number | undefined
++    for (const index of indices) {
++      last = own[index] ?? last
++      keys[index] ??= last
++    }
++
++    let next: number | undefined
++    for (const index of [...indices].reverse()) {
++      next = own[index] ?? next
++      keys[index] ??= next
++    }
++  }
++
++  return keys
++}
++
++/** Arranges the rows between each two hunk headers. The headers stay put. */
++function bySection(
++  rows: ReadonlyArray<SimplifiedDiffRow>,
++  arrange: (
++    section: ReadonlyArray<SimplifiedDiffRow>
++  ) => ReadonlyArray<SimplifiedDiffRow>
++): ReadonlyArray<SimplifiedDiffRow> {
++  const output = new Array<SimplifiedDiffRow>()
++  let section = new Array<SimplifiedDiffRow>()
++
++  for (const row of rows) {
++    if (row.type === DiffRowType.Hunk) {
++      output.push(...arrange(section), row)
++      section = []
++    } else {
++      section.push(row)
++    }
++  }
++  output.push(...arrange(section))
++
++  return output
++}
++
++/** Where Diffest's view puts the row: the view row its line starts on. */
++function getViewRow(
++  row: SimplifiedDiffRow,
++  overlay: IDiffestTokens
++): number | undefined {
++  switch (row.type) {
++    case DiffRowType.Deleted:
++      return getLineRow(overlay.beforeLineRows, row.data.lineNumber)
++    case DiffRowType.Added:
++      return getLineRow(overlay.afterLineRows, row.data.lineNumber)
++    case DiffRowType.Modified:
++      return getLineRow(overlay.afterLineRows, row.afterData.lineNumber)
++    case DiffRowType.Context:
++      return (
++        getLineRow(overlay.afterLineRows, row.afterLineNumber) ??
++        getLineRow(overlay.beforeLineRows, row.beforeLineNumber)
++      )
++    case DiffRowType.Hunk:
++      return undefined
++  }
++}
++
++function getRank(row: SimplifiedDiffRow): number {
++  switch (row.type) {
++    case DiffRowType.Deleted:
++      return 0
++    case DiffRowType.Added:
++      return 2
++    default:
++      return 1
++  }
++}
++
++function isOnSide(row: SimplifiedDiffRow, side: Side): boolean {
++  switch (row.type) {
++    case DiffRowType.Deleted:
++      return side === 'before'
++    case DiffRowType.Added:
++      return side === 'after'
++    case DiffRowType.Hunk:
++      return false
++    default:
++      return true
++  }
++}
++
++function withoutDeletedRows(
++  rows: ReadonlyArray<SimplifiedDiffRow>,
++  lines: ReadonlySet<number>
++): ReadonlyArray<SimplifiedDiffRow> {
++  return rows.filter(
++    row =>
++      row.type !== DiffRowType.Deleted || !lines.has(row.data.lineNumber - 1)
++  )
++}
++
++// Row line numbers count from 1, Diffest's from 0.
++function getLineRow(
++  lineRows: ReadonlyArray<number | null>,
++  lineNumber: number
++): number | undefined {
++  return lineRows[lineNumber - 1] ?? undefined
++}
+diff --git a/app/styles/ui/_diffest-diff.scss b/app/styles/ui/_diffest-diff.scss
+new file mode 100644
+index 0000000000..9b6c2b45ab
+--- /dev/null
++++ b/app/styles/ui/_diffest-diff.scss
+@@ -0,0 +1,100 @@
++// What Diffest marked, painted on top of the lines git produced.
++//
++// Only backgrounds are set here. Syntax highlighting colours the text of these
++// same characters, and a changed token should still look like the code it is.
++//
++// The colours are those of the page in `diffing-testing-framework`, so a
++// change reads the same here as in the cases that define it. The variables live
++// here rather than in `_variables.scss` and `themes/_dark.scss`, so this fork
++// touches as little of upstream as it can. They follow those files'
++// conventions: `:root` holds the light theme, `body.theme-dark` the dark one.
++
++:root {
++  --diffest-added-background-color: #abf2bc;
++  --diffest-deleted-background-color: #ffc1c0;
++  --diffest-changed-background-color: #fff1b8;
++  --diffest-moved-background-color: #b6e3ff;
++}
++
++body.theme-dark {
++  --diffest-added-background-color: rgba(46, 160, 67, 0.4);
++  --diffest-deleted-background-color: rgba(248, 81, 73, 0.4);
++  --diffest-changed-background-color: rgba(210, 153, 34, 0.4);
++  --diffest-moved-background-color: rgba(56, 139, 253, 0.32);
++}
++
++// One system paints, not two. Git colours a changed row from end to end, and
++// Diffest paints the text inside it, so an added line would say "added" twice,
++// and a change or a move would read as yellow on green or blue on red.
++//
++// So in Diffest's view the row background goes, and the marks are the only
++// colour. Scoped to `.diffest-overlay`, which the diff sets only when Diffest
++// returned marks for this file. Every other file keeps git's colours.
++.side-by-side-diff-container.diffest-overlay .row {
++  .before,
++  .after {
++    background: var(--diff-background-color);
++  }
++
++  // The empty half of a split row must still read as "nothing here", not as an
++  // unchanged line, so it keeps its background.
++  &.added .before,
++  &.deleted .after {
++    background: var(--diff-empty-row-background-color);
++  }
++
++  // Git's per-line verdict goes with the row background. It often disagrees
++  // with Diffest: a block that Diffest reads as only broken over more lines is,
++  // to git, lines removed and lines added. That leaves a `+` on a line that
++  // shows no mark.
++  //
++  // The line-number columns still say which side a line belongs to: a deleted
++  // line has a number on the left only, an added line on the right only.
++  //
++  // Hidden, not removed: the prefix is what spaces the code away from the line
++  // numbers, so the text lines up where it does in git's view.
++  &:not(.hunk-info) .prefix {
++    visibility: hidden;
++  }
++
++  .line-number {
++    background: var(--diff-gutter-background-color);
++    border-color: var(--diff-border-color);
++  }
++}
++
++.side-by-side-diff {
++  .cm-df-added {
++    background: var(--diffest-added-background-color);
++  }
++
++  .cm-df-deleted {
++    background: var(--diffest-deleted-background-color);
++  }
++
++  // The new half of a change. Its old half is painted as deleted.
++  .cm-df-changed {
++    background: var(--diffest-changed-background-color);
++  }
++
++  // Both ends of a move have the same colour: the line is neither what went nor
++  // what arrived, it did both.
++  .cm-df-moved {
++    background: var(--diffest-moved-background-color);
++  }
++
++  // The end a move left: the line is no longer there, so it is dimmed.
++  // `diffest-move-hover.ts` lights both ends while the pointer is on either.
++  .cm-df-moved-from {
++    opacity: 0.3;
++  }
++}
++
++// The algorithm in use, left of the settings button that changes it.
++.diff-options-component .diff-algorithm-label {
++  align-self: center;
++  margin-right: var(--spacing-half);
++  color: var(--text-secondary-color);
++  font-size: var(--font-size-sm);
++  user-select: none;
++}
+diff --git a/app/test/unit/diffest-rows-test.ts b/app/test/unit/diffest-rows-test.ts
+new file mode 100644
+index 0000000000..a89b1e1c50
+--- /dev/null
++++ b/app/test/unit/diffest-rows-test.ts
+@@ -0,0 +1,259 @@
++import { describe, it } from 'node:test'
++import assert from 'node:assert'
++import diff from 'diffest'
++import type { DiffLine, DiffView, Segment } from 'diffest'
++import { DiffHunkExpansionType } from '../../src/models/diff'
++import { DiffRowType, SimplifiedDiffRow } from '../../src/ui/diff/diff-helpers'
++import { withDiffestRows } from '../../src/ui/diff/diffest-rows'
++import { tokensFromView } from '../../src/lib/diffest/tokens'
++import type { IDiffestTokens } from '../../src/lib/diffest/tokens'
++
++function data(lineNumber: number) {
++  return {
++    content: `line ${lineNumber}`,
++    lineNumber,
++    diffLineNumber: lineNumber,
++    noNewLineIndicator: false,
++    tokens: [],
++  }
++}
++
++function deleted(lineNumber: number): SimplifiedDiffRow {
++  return { type: DiffRowType.Deleted, data: data(lineNumber), hunkStartLine: 1 }
++}
++
++function added(lineNumber: number): SimplifiedDiffRow {
++  return { type: DiffRowType.Added, data: data(lineNumber), hunkStartLine: 1 }
++}
++
++function modified(before: number, after: number): SimplifiedDiffRow {
++  return {
++    type: DiffRowType.Modified,
++    beforeData: data(before),
++    afterData: data(after),
++    hunkStartLine: 1,
++  }
++}
++
++function context(before: number, after: number): SimplifiedDiffRow {
++  return {
++    type: DiffRowType.Context,
++    content: `line ${after}`,
++    beforeLineNumber: before,
++    afterLineNumber: after,
++    beforeTokens: [],
++    afterTokens: [],
++  }
++}
++
++const hunk: SimplifiedDiffRow = {
++  type: DiffRowType.Hunk,
++  content: '@@',
++  expansionType: DiffHunkExpansionType.None,
++  hunkIndex: 0,
++}
++
++/** Only where Diffest's view puts each line; nothing hidden or put inline. */
++function overlay(
++  beforeLineRows: ReadonlyArray<number | null>,
++  afterLineRows: ReadonlyArray<number | null>,
++  unmarkedBeforeLines: ReadonlyArray<number> = []
++): IDiffestTokens {
++  return {
++    before: {},
++    after: {},
++    unmarkedBeforeLines,
++    keptBeforeLines: [],
++    inlineDeletions: [],
++    beforeLineRows,
++    afterLineRows,
++  }
++}
++
++/** `-3` an old line, `+3` a new one, `3|4` a pair, `=4` context, `@@` a hunk. */
++function describeRows(rows: ReadonlyArray<SimplifiedDiffRow>) {
++  return rows.map(row => {
++    switch (row.type) {
++      case DiffRowType.Deleted:
++        return `-${row.data.lineNumber}`
++      case DiffRowType.Added:
++        return `+${row.data.lineNumber}`
++      case DiffRowType.Modified:
++        return `${row.beforeData.lineNumber}|${row.afterData.lineNumber}`
++      case DiffRowType.Context:
++        return `=${row.afterLineNumber}`
++      case DiffRowType.Hunk:
++        return '@@'
++    }
++  })
++}
++
++describe('withDiffestRows', () => {
++  it('puts removed lines where Diffest puts them, not first', () => {
++    const rows = [
++      deleted(1),
++      deleted(2),
++      deleted(3),
++      ...[1, 2, 3, 4, 5, 6].map(added),
++    ]
++
++    const { rows: shown } = withDiffestRows(
++      rows,
++      overlay([5, 6, 7], [0, 1, 2, 3, 4, 8]),
++      false
++    )
++
++    assert.deepStrictEqual(describeRows(shown), [
++      '+1',
++      '+2',
++      '+3',
++      '+4',
++      '+5',
++      '-1',
++      '-2',
++      '-3',
++      '+6',
++    ])
++  })
++
++  it('puts an old line before a new one on the same view line', () => {
++    const { rows: shown } = withDiffestRows(
++      [added(1), deleted(1)],
++      overlay([0], [0]),
++      false
++    )
++
++    assert.deepStrictEqual(describeRows(shown), ['-1', '+1'])
++  })
++
++  it('keeps a blank line beside the line before it', () => {
++    const rows = [deleted(1), deleted(2), deleted(3), added(1), added(2)]
++
++    const { rows: shown } = withDiffestRows(
++      rows,
++      overlay([1, null, 3], [0, 2]),
++      false
++    )
++
++    assert.deepStrictEqual(describeRows(shown), ['+1', '-1', '-2', '+2', '-3'])
++  })
++
++  it('never moves a row past a hunk header', () => {
++    const rows = [hunk, deleted(1), added(1), hunk, deleted(5), added(5)]
++
++    const { rows: shown } = withDiffestRows(
++      rows,
++      overlay([1, null, null, null, 9], [0, null, null, null, 8]),
++      false
++    )
++
++    assert.deepStrictEqual(describeRows(shown), [
++      '@@',
++      '+1',
++      '-1',
++      '@@',
++      '+5',
++      '-5',
++    ])
++  })
++
++  // Git pairs the old line with the first new one. Diffest puts it on one view
++  // line with the second.
++  it('pairs lines side by side the way Diffest pairs them', () => {
++    const { rows: shown } = withDiffestRows(
++      [modified(1, 1), added(2)],
++      overlay([5], [3, 5]),
++      true
++    )
++
++    assert.deepStrictEqual(describeRows(shown), ['+1', '1|2'])
++  })
++
++  it('hides a lone old line with no mark in Split', () => {
++    const { rows: shown } = withDiffestRows(
++      [context(1, 1), deleted(2), added(2)],
++      overlay([0, 1], [0, 2], [1]),
++      true
++    )
++
++    assert.deepStrictEqual(describeRows(shown), ['=1', '+2'])
++  })
++
++  // The change that asked for this. Git lists all five old lines, then all the
++  // new ones. Diffest keeps the head and the return, each on one row with its
++  // removed text, and puts the removed rest of the call right after its head.
++  it('shows a rewritten function the way Diffest does', () => {
++    const before = [
++      'function cleanUserText(text: string): string | null {',
++      '  const withCommand = text.replace(',
++      '    /<command-message>([\\s\\S]*?)<\\/command-message>\\s*/,',
++      '    (_, name: string) => (name.trim() ? `/${name.trim()} ` : ""),',
++      '  );',
++      '  return stripIdeTags(withCommand) || null;',
++      '}',
++      '',
++    ].join('\n')
++    const after = [
++      'function cleanUserText(text: string): string | null {',
++      '  // Claude Code writes this note before the entries of a local command. The',
++      '  // user did not type it.',
++      '  if (text.startsWith("<local-command-caveat>")) return null;',
++      '  // A slash command arrives as <command-message>, <command-name>, and',
++      '  // <command-args> tags. Show it the way the user typed it.',
++      '  const command = tagContent(text, "command-name");',
++      '  const prompt = command === null ? text : `${command} ${tagContent(text, "command-args") ?? ""}`;',
++      '  return stripIdeTags(prompt) || null;',
++      '}',
++      '',
++    ].join('\n')
++    const tokens = tokensFromView(diff(before, after, '.ts'), before, after)
++    assert.ok(tokens !== null)
++
++    const rows = [
++      context(1, 1),
++      ...[2, 3, 4, 5, 6].map(deleted),
++      ...[2, 3, 4, 5, 6, 7, 8, 9].map(added),
++      context(7, 10),
++    ]
++
++    const { rows: shown, inline } = withDiffestRows(rows, tokens, false)
++
++    assert.deepStrictEqual(describeRows(shown), [
++      '=1',
++      '+2',
++      '+3',
++      '+4',
++      '+5',
++      '+6',
++      '+7',
++      '-3',
++      '-4',
++      '-5',
++      '+8',
++      '+9',
++      '=10',
++    ])
++    // `withCommand` goes in front of `command`, and in front of `prompt`.
++    assert.deepStrictEqual([...inline.keys()].sort(), [6, 8])
++  })
++})
++
++describe('tokensFromView line rows', () => {
++  function line(...segments: Segment[]): DiffLine {
++    return { segments }
++  }
++
++  it('gives each line the view row it starts on', () => {
++    const view: DiffView = [
++      line({ kind: 'same', text: 'a' }),
++      line({ kind: 'deleted', text: 'b' }),
++      line({ kind: 'same', text: '' }),
++      line({ kind: 'same', text: 'c' }),
++    ]
++
++    const tokens = tokensFromView(view, 'a\nb\n\nc', 'a\n\nc')
++
++    assert.deepStrictEqual(tokens?.beforeLineRows, [0, 1, null, 3])
++    assert.deepStrictEqual(tokens?.afterLineRows, [0, null, 3])
++  })
++})
+diff --git a/app/test/unit/diffest-tokens-test.ts b/app/test/unit/diffest-tokens-test.ts
+new file mode 100644
+index 0000000000..cde7c559a4
+--- /dev/null
++++ b/app/test/unit/diffest-tokens-test.ts
+@@ -0,0 +1,296 @@
++import { describe, it } from 'node:test'
++import assert from 'node:assert'
++import diff from 'diffest'
++import type { DiffLine, DiffView, Segment } from 'diffest'
++import { ITokens } from '../../src/lib/highlighter/types'
++import { IDiffestTokens, tokensFromView } from '../../src/lib/diffest/tokens'
++import { withInlineDeletions } from '../../src/lib/diffest/inline'
++
++function line(...segments: Segment[]): DiffLine {
++  return { segments }
++}
++
++function same(text: string): Segment {
++  return { kind: 'same', text }
++}
++
++function changed(before: string, after: string, carried = false): Segment {
++  return { kind: 'changed', before, after, carried }
++}
++
++/** The class painted on a character of the file, if any. */
++function paintAt(
++  tokens: ITokens,
++  lineNumber: number,
++  column: number
++): string | undefined {
++  const lineTokens = tokens[lineNumber] ?? {}
++  for (const start in lineTokens) {
++    const token = lineTokens[start]
++    if (column >= Number(start) && column < Number(start) + token.length) {
++      return token.token
++    }
++  }
++  return undefined
++}
++
++/** The marks alone, without the list of lines Diffest reads as kept. */
++function marks(tokens: IDiffestTokens | null) {
++  return tokens === null ? null : { before: tokens.before, after: tokens.after }
++}
++
++describe('tokensFromView', () => {
++  it('paints the old half of a change as deleted and the new half as changed', () => {
++    const view: DiffView = [line(same('const rate = '), changed('2', '3'))]
++
++    const tokens = tokensFromView(view, 'const rate = 2', 'const rate = 3')
++
++    assert.deepStrictEqual(marks(tokens), {
++      before: { 0: { 13: { length: 1, token: 'df-deleted' } } },
++      after: { 0: { 13: { length: 1, token: 'df-changed' } } },
++    })
++  })
++
++  // Diffest writes a block back onto one line when the break has nothing to
++  // paint, so the view has one line where the file has four.
++  it('places a mark on the file line, not on the view line', () => {
++    const view: DiffView = [
++      line(same('call(a, '), changed('b', 'c'), same(')')),
++    ]
++
++    const tokens = tokensFromView(
++      view,
++      'call(\n  a,\n  b\n)',
++      'call(\n  a,\n  c\n)'
++    )
++
++    assert.deepStrictEqual(tokens?.before, {
++      2: { 2: { length: 1, token: 'df-deleted' } },
++    })
++    assert.deepStrictEqual(tokens?.after, {
++      2: { 2: { length: 1, token: 'df-changed' } },
++    })
++  })
++
++  it('skips a trailing comma the view does not keep', () => {
++    const view: DiffView = [line(same('f('), changed('a', 'b'), same(')'))]
++
++    const tokens = tokensFromView(view, 'f(\n  a,\n)', 'f(\n  b,\n)')
++
++    assert.strictEqual(paintAt(tokens!.before, 1, 2), 'df-deleted')
++    assert.strictEqual(paintAt(tokens!.after, 1, 2), 'df-changed')
++  })
++
++  it('paints whitespace inside a mark, but not the indentation after a break', () => {
++    const view: DiffView = [
++      line(same('x('), { kind: 'added', text: 'a, b' }, same(')')),
++    ]
++
++    const tokens = tokensFromView(view, 'x()', 'x(a,\n  b)')
++
++    assert.deepStrictEqual(tokens?.after, {
++      0: { 2: { length: 2, token: 'df-added' } },
++      1: { 2: { length: 1, token: 'df-added' } },
++    })
++  })
++
++  it('paints nothing for a quiet mark', () => {
++    const view: DiffView = [
++      line(same('a'), { kind: 'added', text: ' b', quiet: true }),
++    ]
++
++    const tokens = tokensFromView(view, 'a', 'a b')
++
++    assert.deepStrictEqual(marks(tokens), { before: {}, after: {} })
++  })
++
++  it('paints a carried change only where it landed', () => {
++    const view: DiffView = [
++      line(same('x '), changed('p', 'q', true), {
++        kind: 'deleted',
++        text: ' p',
++        quiet: true,
++      }),
++    ]
++
++    const tokens = tokensFromView(view, 'x  p', 'x q')
++
++    assert.deepStrictEqual(marks(tokens), {
++      before: {},
++      after: { 0: { 2: { length: 1, token: 'df-changed' } } },
++    })
++  })
++
++  it('gives both ends of a move the same pair class', () => {
++    const view: DiffView = [
++      { segments: [same('b()')], move: { end: 'to' } },
++      line(same('a()')),
++      { segments: [same('b()')], move: { end: 'from' } },
++    ]
++
++    const tokens = tokensFromView(view, 'a()\nb()', 'b()\na()')
++
++    assert.deepStrictEqual(marks(tokens), {
++      before: {
++        1: { 0: { length: 3, token: 'df-moved df-moved-from df-m-0' } },
++      },
++      after: { 0: { 0: { length: 3, token: 'df-moved df-m-0' } } },
++    })
++  })
++
++  it('declines a view whose text is not the text of the file', () => {
++    const view: DiffView = [line(same('abc'))]
++
++    assert.strictEqual(tokensFromView(view, 'abd', 'abc'), null)
++  })
++
++  it('declines a view that leaves out text the file has', () => {
++    const view: DiffView = [line(same('abc'))]
++
++    assert.strictEqual(tokensFromView(view, 'abc\nmore', 'abc'), null)
++  })
++
++  it('places what the real algorithm marks', () => {
++    const before = 'const a = 1\nconst rate = 2\n'
++    const after = 'const a = 1\nconst rate = 3\n'
++
++    const tokens = tokensFromView(diff(before, after, '.ts'), before, after)
++
++    assert.notStrictEqual(tokens, null)
++    assert.strictEqual(paintAt(tokens!.after, 1, 13), 'df-changed')
++    assert.strictEqual(paintAt(tokens!.after, 0, 6), undefined)
++  })
++
++  it('reports an old line with no mark as kept', () => {
++    const view: DiffView = [
++      line(
++        same('function f(a: A'),
++        { kind: 'added', text: ', b: B' },
++        same('): R {')
++      ),
++    ]
++
++    const tokens = tokensFromView(
++      view,
++      'function f(a: A): R {',
++      'function f(a: A, b: B): R {'
++    )
++
++    assert.deepStrictEqual(tokens?.unmarkedBeforeLines, [0])
++  })
++
++  // Hiding this row would hide the `2` that went.
++  it('does not report an old line that holds a mark', () => {
++    const view: DiffView = [line(same('const rate = '), changed('2', '3'))]
++
++    const tokens = tokensFromView(view, 'const rate = 2', 'const rate = 3')
++
++    assert.deepStrictEqual(tokens?.unmarkedBeforeLines, [])
++  })
++
++  it('does not report a blank old line', () => {
++    const view: DiffView = [line(same('a')), line(same('')), line(same('b'))]
++
++    const tokens = tokensFromView(view, 'a\n\nb', 'a\n\nb')
++
++    assert.deepStrictEqual(tokens?.unmarkedBeforeLines, [0, 2])
++  })
++
++  // Git shows the old signature as deleted and the new one as added. Diffest
++  // shows one line that gained a parameter.
++  it('keeps the old line of a signature that gained a parameter', () => {
++    const before =
++      'function deriveState(parsed: ParsedTranscript, now: number): AgentState {\n  return state\n}\n'
++    const after =
++      'function deriveState(parsed: ParsedTranscript, now: number, promptOpen: boolean): AgentState {\n  return state\n}\n'
++
++    const tokens = tokensFromView(diff(before, after, '.ts'), before, after)
++
++    assert.ok(tokens?.unmarkedBeforeLines.includes(0))
++  })
++
++  // Git shows the old line and the new line. Diffest shows one line, with
++  // `order` removed just before `unsorted`, and `.push(item.cwd);` once.
++  it('puts the text removed from a changed line into the new line', () => {
++    const before = '  order.push(item.cwd);\n'
++    const after = '  unsorted.push(item.cwd);\n'
++
++    const tokens = tokensFromView(diff(before, after, '.ts'), before, after)
++
++    assert.deepStrictEqual(tokens?.keptBeforeLines, [0])
++    assert.deepStrictEqual(tokens?.inlineDeletions, [
++      { beforeLine: 0, afterLine: 0, column: 2, text: 'order' },
++    ])
++  })
++
++  it('puts removed text after the whitespace before it', () => {
++    const view: DiffView = [line(same('x = '), changed('2', '3'))]
++
++    const tokens = tokensFromView(view, 'x = 2', 'x = 3')
++
++    assert.deepStrictEqual(tokens?.inlineDeletions, [
++      { beforeLine: 0, afterLine: 0, column: 4, text: '2' },
++    ])
++  })
++
++  it('puts a deletion where it was removed from', () => {
++    const view: DiffView = [
++      line(same('foo('), { kind: 'deleted', text: 'a, ' }, same('b)')),
++    ]
++
++    const tokens = tokensFromView(view, 'foo(a, b)', 'foo(b)')
++
++    assert.deepStrictEqual(tokens?.keptBeforeLines, [0])
++    assert.deepStrictEqual(tokens?.inlineDeletions, [
++      { beforeLine: 0, afterLine: 0, column: 4, text: 'a, ' },
++    ])
++  })
++
++  // A deleted line has a row of its own, so its text goes nowhere else.
++  it('does not keep a line Diffest reports as deleted', () => {
++    const view: DiffView = [
++      line({ kind: 'deleted', text: 'gone()' }),
++      line(same('kept()')),
++    ]
++
++    const tokens = tokensFromView(view, 'gone()\nkept()', 'kept()')
++
++    assert.deepStrictEqual(tokens?.keptBeforeLines, [1])
++    assert.deepStrictEqual(tokens?.inlineDeletions, [])
++  })
++})
++
++describe('withInlineDeletions', () => {
++  it('puts removed text in and moves the tokens after it', () => {
++    const { content, tokens } = withInlineDeletions(
++      'unsorted.push(item.cwd);',
++      [
++        {
++          0: { length: 8, token: 'df-changed' },
++          9: { length: 4, token: 'fn' },
++        },
++      ],
++      [{ beforeLine: 0, afterLine: 0, column: 0, text: 'order' }]
++    )
++
++    assert.strictEqual(content, 'orderunsorted.push(item.cwd);')
++    assert.deepStrictEqual(tokens, [
++      { 5: { length: 8, token: 'df-changed' }, 14: { length: 4, token: 'fn' } },
++      { 0: { length: 5, token: 'df-deleted' } },
++    ])
++  })
++
++  it('cuts a token that removed text goes inside', () => {
++    const { content, tokens } = withInlineDeletions(
++      'abcdef',
++      [{ 0: { length: 6, token: 'string' } }],
++      [{ beforeLine: 0, afterLine: 0, column: 3, text: 'XY' }]
++    )
++
++    assert.strictEqual(content, 'abcXYdef')
++    assert.deepStrictEqual(tokens, [
++      { 0: { length: 3, token: 'string' }, 5: { length: 3, token: 'string' } },
++      { 3: { length: 2, token: 'df-deleted' } },
++    ])
++  })
++})

@@ -1,0 +1,100 @@
+// What Diffest marked, painted on top of the lines git produced.
+//
+// Only backgrounds are set here. Syntax highlighting colours the text of these
+// same characters, and a changed token should still look like the code it is.
+//
+// The colours are those of the page in `diffing-testing-framework`, so a
+// change reads the same here as in the cases that define it. The variables live
+// here rather than in `_variables.scss` and `themes/_dark.scss`, so this fork
+// touches as little of upstream as it can. They follow those files'
+// conventions: `:root` holds the light theme, `body.theme-dark` the dark one.
+
+:root {
+  --diffest-added-background-color: #abf2bc;
+  --diffest-deleted-background-color: #ffc1c0;
+  --diffest-changed-background-color: #fff1b8;
+  --diffest-moved-background-color: #b6e3ff;
+}
+
+body.theme-dark {
+  --diffest-added-background-color: rgba(46, 160, 67, 0.4);
+  --diffest-deleted-background-color: rgba(248, 81, 73, 0.4);
+  --diffest-changed-background-color: rgba(210, 153, 34, 0.4);
+  --diffest-moved-background-color: rgba(56, 139, 253, 0.32);
+}
+
+// One system paints, not two. Git colours a changed row from end to end, and
+// Diffest paints the text inside it, so an added line would say "added" twice,
+// and a change or a move would read as yellow on green or blue on red.
+//
+// So in Diffest's view the row background goes, and the marks are the only
+// colour. Scoped to `.diffest-overlay`, which the diff sets only when Diffest
+// returned marks for this file. Every other file keeps git's colours.
+.side-by-side-diff-container.diffest-overlay .row {
+  .before,
+  .after {
+    background: var(--diff-background-color);
+  }
+
+  // The empty half of a split row must still read as "nothing here", not as an
+  // unchanged line, so it keeps its background.
+  &.added .before,
+  &.deleted .after {
+    background: var(--diff-empty-row-background-color);
+  }
+
+  // Git's per-line verdict goes with the row background. It often disagrees
+  // with Diffest: a block that Diffest reads as only broken over more lines is,
+  // to git, lines removed and lines added. That leaves a `+` on a line that
+  // shows no mark.
+  //
+  // The line-number columns still say which side a line belongs to: a deleted
+  // line has a number on the left only, an added line on the right only.
+  //
+  // Hidden, not removed: the prefix is what spaces the code away from the line
+  // numbers, so the text lines up where it does in git's view.
+  &:not(.hunk-info) .prefix {
+    visibility: hidden;
+  }
+
+  .line-number {
+    background: var(--diff-gutter-background-color);
+    border-color: var(--diff-border-color);
+  }
+}
+
+.side-by-side-diff {
+  .cm-df-added {
+    background: var(--diffest-added-background-color);
+  }
+
+  .cm-df-deleted {
+    background: var(--diffest-deleted-background-color);
+  }
+
+  // The new half of a change. Its old half is painted as deleted.
+  .cm-df-changed {
+    background: var(--diffest-changed-background-color);
+  }
+
+  // Both ends of a move have the same colour: the line is neither what went nor
+  // what arrived, it did both.
+  .cm-df-moved {
+    background: var(--diffest-moved-background-color);
+  }
+
+  // The end a move left: the line is no longer there, so it is dimmed.
+  // `diffest-move-hover.ts` lights both ends while the pointer is on either.
+  .cm-df-moved-from {
+    opacity: 0.3;
+  }
+}
+
+// The algorithm in use, left of the settings button that changes it.
+.diff-options-component .diff-algorithm-label {
+  align-self: center;
+  margin-right: var(--spacing-half);
+  color: var(--text-secondary-color);
+  font-size: var(--font-size-sm);
+  user-select: none;
+}

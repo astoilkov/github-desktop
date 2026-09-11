@@ -15,6 +15,13 @@ import {
   IFileContents,
 } from './syntax-highlighting'
 import { ITokens, ILineTokens, IToken } from '../../lib/highlighter/types'
+import { Disposable } from 'event-kit'
+import { DiffAlgorithm, diffAlgorithmStore } from './diff-algorithm'
+import { getDiffestOverlay } from '../../lib/diffest/engine'
+import { watchMoveHover } from './diffest-move-hover'
+import type { IDiffestTokens } from '../../lib/diffest/tokens'
+import { withInlineDeletions } from '../../lib/diffest/inline'
+import { withDiffestRows } from './diffest-rows'
 import {
   assertNever,
   assertNonNullable,
@@ -174,6 +181,22 @@ interface ISideBySideDiffState {
   readonly afterTokens?: ITokens
 
   /**
+   * What Diffest marked in the previous contents of the file, or undefined when
+   * it had nothing to say about it.
+   */
+  readonly beforeDiffestTokens?: ITokens
+
+  /** The same, for the next contents of the file. */
+  readonly afterDiffestTokens?: ITokens
+
+  /**
+   * Diffest's whole answer for the file: which of git's deleted rows to hide,
+   * and the removed text that goes into the new rows instead. Undefined when
+   * Diffest has no answer for the file.
+   */
+  readonly diffestOverlay?: IDiffestTokens
+
+  /**
    * Indicates whether the user is doing a text selection and in which
    * column is doing it. This allows us to limit text selection to that
    * specific column via CSS.
@@ -249,6 +272,11 @@ export class SideBySideDiff extends React.Component<
   private renderedStartIndex: number = 0
   private renderedStopIndex: number | undefined = undefined
 
+  /** Stops the Diffest run still going when the file changes. */
+  private diffestAbortController: AbortController | null = null
+  private stopMoveHover: (() => void) | null = null
+  private diffAlgorithmSubscription: Disposable | null = null
+
   private readonly hunkExpansionRefs = new Map<string, HTMLButtonElement>()
 
   /**
@@ -281,6 +309,11 @@ export class SideBySideDiff extends React.Component<
 
   public componentDidMount() {
     this.initDiffSyntaxMode()
+    this.initDiffestOverlay()
+
+    this.diffAlgorithmSubscription = diffAlgorithmStore.onDidChange(
+      this.initDiffestOverlay
+    )
 
     window.addEventListener('keydown', this.onWindowKeyDown)
 
@@ -428,6 +461,10 @@ export class SideBySideDiff extends React.Component<
     )
     document.removeEventListener('mousemove', this.onUpdateSelection)
     this.removeContextMenuListenerFromDiff()
+
+    this.diffAlgorithmSubscription?.dispose()
+    // Or the worker this component started outlives the view that wanted it.
+    this.diffestAbortController?.abort()
   }
 
   public componentDidUpdate(
@@ -439,6 +476,26 @@ export class SideBySideDiff extends React.Component<
     ) {
       this.initDiffSyntaxMode()
       this.clearListRowsHeightCache()
+    }
+
+    // Not gated on highlightParametersEqual. That compares state.diff.text,
+    // which changes each time a hunk is expanded, but Diffest's answer depends
+    // on the file contents alone — so each click of "expand 20 lines" would
+    // hash both files again for the same answer. SeamlessDiffSwitcher keeps the
+    // contents object while the same file stays selected, so its identity is
+    // the right question.
+    if (this.props.fileContents !== prevProps.fileContents) {
+      this.initDiffestOverlay()
+    }
+
+    // Hidden rows move every row after them, and both caches are keyed by row
+    // position.
+    if (this.state.diffestOverlay !== prevState.diffestOverlay) {
+      this.rowSelectableGroupStaticDataCache.clear()
+      this.clearListRowsHeightCache()
+      // The rows already rendered with the old heights, so an empty cache alone
+      // changes nothing until the list measures them again.
+      this.virtualListRef.current?.recomputeRowHeights()
     }
 
     if (!textDiffEquals(this.props.diff, prevProps.diff)) {
@@ -575,15 +632,24 @@ export class SideBySideDiff extends React.Component<
       ref.addEventListener('select-all', this.onSelectAll)
     }
     this.diffContainer = ref
+
+    this.stopMoveHover?.()
+    this.stopMoveHover = ref === null ? null : watchMoveHover(ref)
   }
 
+  // Every lookup of a row by its index goes through here. Diffest can hide
+  // rows, so an index into the unfiltered rows points at a different row.
   private getCurrentDiffRows() {
-    const { diff } = this.state
+    return this.getDiffestRows().rows
+  }
 
-    return getDiffRows(
-      diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
+  private getDiffestRows() {
+    const { diff, diffestOverlay } = this.state
+
+    return withDiffestRows(
+      getDiffRows(diff, this.props.showSideBySideDiff, this.canExpandDiff()),
+      diffestOverlay,
+      this.props.showSideBySideDiff
     )
   }
 
@@ -600,11 +666,15 @@ export class SideBySideDiff extends React.Component<
 
     const rows = this.getCurrentDiffRows()
     const containerClassName = classNames('side-by-side-diff-container', {
+      // Gives the whole row to Diffest's marks. Only where Diffest answered:
+      // otherwise a file it cannot read would lose git's colours and show no
+      // marks at all.
+      'diffest-overlay': this.hasDiffestOverlay(),
       'unified-diff': !this.props.showSideBySideDiff,
       [`selecting-${this.state.selectingTextInRow}`]:
         this.props.showSideBySideDiff &&
         this.state.selectingTextInRow !== undefined,
-      editable: canSelect(this.props.file),
+      editable: this.canSelectLines(),
     })
 
     return (
@@ -655,10 +725,12 @@ export class SideBySideDiff extends React.Component<
                 showSideBySideDiff={this.props.showSideBySideDiff}
                 beforeTokens={this.state.beforeTokens}
                 afterTokens={this.state.afterTokens}
+                beforeDiffestTokens={this.state.beforeDiffestTokens}
+                afterDiffestTokens={this.state.afterDiffestTokens}
                 temporarySelection={this.state.temporarySelection}
                 hoveredHunk={this.state.hoveredHunk}
                 showDiffCheckMarks={this.props.showDiffCheckMarks}
-                isSelectable={canSelect(this.props.file)}
+                isSelectable={this.canSelectLines()}
                 fileSelection={this.getSelection()}
                 // rows are memoized and include things like the
                 // noNewlineIndicator
@@ -700,11 +772,7 @@ export class SideBySideDiff extends React.Component<
   ): IRowSelectableGroup | null {
     const { diff, hoveredHunk } = this.state
 
-    const rows = getDiffRows(
-      diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
-    )
+    const rows = this.getCurrentDiffRows()
     const row = rows[rowIndex]
 
     if (row === undefined || !isRowChanged(row)) {
@@ -864,11 +932,7 @@ export class SideBySideDiff extends React.Component<
 
   private renderRow = ({ index, parent, style, key }: ListRowProps) => {
     const { diff } = this.state
-    const rows = getDiffRows(
-      diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
-    )
+    const rows = this.getCurrentDiffRows()
 
     const row = rows[index]
     if (row === undefined) {
@@ -912,7 +976,7 @@ export class SideBySideDiff extends React.Component<
             row={rowWithTokens}
             lineNumberWidth={lineNumberWidth}
             numRow={index}
-            isDiffSelectable={canSelect(this.props.file)}
+            isDiffSelectable={this.canSelectLines()}
             rowSelectableGroup={rowSelectableGroupDetails}
             showSideBySideDiff={this.props.showSideBySideDiff}
             hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
@@ -1025,8 +1089,71 @@ export class SideBySideDiff extends React.Component<
     })
   }
 
+  /**
+   * Asks Diffest what changed, when the user has asked for Diffest.
+   *
+   * Every way this can come back empty — the algorithm is set to Git, there is
+   * no parser for this file type, the file is too large, the view does not
+   * match the file — clears the marks and leaves the git diff to speak for
+   * itself.
+   */
+  private initDiffestOverlay = async () => {
+    // A file switch stops the run that was still going, so its worker is
+    // terminated rather than left to finish work nobody waits for.
+    this.diffestAbortController?.abort()
+
+    const { fileContents } = this.props
+
+    if (
+      fileContents === null ||
+      diffAlgorithmStore.value !== DiffAlgorithm.Diffest
+    ) {
+      this.setState({
+        beforeDiffestTokens: undefined,
+        afterDiffestTokens: undefined,
+        diffestOverlay: undefined,
+      })
+      return
+    }
+
+    const controller = new AbortController()
+    this.diffestAbortController = controller
+
+    const overlay = await getDiffestOverlay(fileContents, controller.signal)
+
+    // The file was replaced while the worker ran.
+    if (controller.signal.aborted) {
+      return
+    }
+
+    this.setState({
+      beforeDiffestTokens: overlay?.before,
+      afterDiffestTokens: overlay?.after,
+      diffestOverlay: overlay ?? undefined,
+    })
+  }
+
+  private hasDiffestOverlay(): boolean {
+    return (
+      this.state.beforeDiffestTokens !== undefined ||
+      this.state.afterDiffestTokens !== undefined
+    )
+  }
+
+  /**
+   * Whether single lines and hunks can be selected or discarded. Not while
+   * Diffest paints the file: it hides some of git's deleted rows, and taking
+   * one line of a pair without its hidden other half would commit or discard a
+   * change nobody can see.
+   */
+  private canSelectLines(): boolean {
+    return canSelect(this.props.file) && !this.hasDiffestOverlay()
+  }
+
   private getSelection(): DiffSelection | undefined {
-    return canSelect(this.props.file) ? this.props.file.selection : undefined
+    return canSelect(this.props.file) && !this.hasDiffestOverlay()
+      ? this.props.file.selection
+      : undefined
   }
 
   private createFullRow(row: SimplifiedDiffRow, numRow: number): DiffRow {
@@ -1037,7 +1164,8 @@ export class SideBySideDiff extends React.Component<
           row.data,
           numRow,
           DiffColumn.After,
-          this.state.afterTokens
+          this.state.afterTokens,
+          this.state.afterDiffestTokens
         ),
       }
     }
@@ -1049,7 +1177,8 @@ export class SideBySideDiff extends React.Component<
           row.data,
           numRow,
           DiffColumn.Before,
-          this.state.beforeTokens
+          this.state.beforeTokens,
+          this.state.beforeDiffestTokens
         ),
       }
     }
@@ -1061,13 +1190,15 @@ export class SideBySideDiff extends React.Component<
           row.beforeData,
           numRow,
           DiffColumn.Before,
-          this.state.beforeTokens
+          this.state.beforeTokens,
+          this.state.beforeDiffestTokens
         ),
         afterData: this.getRowDataPopulated(
           row.afterData,
           numRow,
           DiffColumn.After,
-          this.state.afterTokens
+          this.state.afterTokens,
+          this.state.afterDiffestTokens
         ),
       }
     }
@@ -1095,6 +1226,26 @@ export class SideBySideDiff extends React.Component<
         afterSearchTokens.forEach(x => afterTokens.push(x))
       }
 
+      // Each side on its own, unlike the syntax tokens above. Those fall back
+      // to the other side because only one of the two may have been
+      // highlighted. Diffest always marks both, and a context line can carry a
+      // mark on one side only: each end of a move is marked on its own side.
+      const beforeDiffestTokens = getTokens(
+        row.beforeLineNumber,
+        this.state.beforeDiffestTokens
+      )
+      if (beforeDiffestTokens !== null) {
+        beforeTokens.push(beforeDiffestTokens)
+      }
+
+      const afterDiffestTokens = getTokens(
+        row.afterLineNumber,
+        this.state.afterDiffestTokens
+      )
+      if (afterDiffestTokens !== null) {
+        afterTokens.push(afterDiffestTokens)
+      }
+
       return { ...row, beforeTokens, afterTokens }
     }
 
@@ -1105,11 +1256,23 @@ export class SideBySideDiff extends React.Component<
     data: SimplifiedDiffRowData,
     row: number,
     column: DiffColumn,
-    tokens: ITokens | undefined
+    tokens: ITokens | undefined,
+    diffestTokens?: ITokens
   ): IDiffRowData {
     const searchTokens = this.getSearchTokens(row, column)
     const lineTokens = getTokens(data.lineNumber, tokens)
-    const finalTokens = [...data.tokens]
+    const diffestLineTokens = getTokens(data.lineNumber, diffestTokens)
+
+    // At this point data.tokens holds exactly the intra-line diff — the
+    // prefix/suffix trim of the two versions of this line. Where Diffest marks
+    // the same line, that guess is dropped rather than layered underneath: both
+    // paint backgrounds over the same characters, and the one that read the
+    // code should win.
+    //
+    // Per line, not per file. A file Diffest read can still have lines it
+    // marks nothing on — a line a formatter only moved, say — and those keep
+    // the old highlight rather than losing every mark they have today.
+    const finalTokens = diffestLineTokens !== null ? [] : [...data.tokens]
 
     if (searchTokens !== undefined) {
       searchTokens.forEach(x => finalTokens.push(x))
@@ -1117,10 +1280,25 @@ export class SideBySideDiff extends React.Component<
     if (lineTokens !== null) {
       finalTokens.push(lineTokens)
     }
+    // After the search tokens, so a hit still reads as one.
+    if (diffestLineTokens !== null) {
+      finalTokens.push(diffestLineTokens)
+    }
+
+    // The text Diffest reports as removed from this line's hidden old row.
+    const inline =
+      column === DiffColumn.After
+        ? this.getDiffestRows().inline.get(data.lineNumber - 1)
+        : undefined
+    const { content, tokens: rowTokens } =
+      inline === undefined
+        ? { content: data.content, tokens: finalTokens }
+        : withInlineDeletions(data.content, finalTokens, inline)
 
     return {
       ...data,
-      tokens: finalTokens,
+      content,
+      tokens: rowTokens,
       isSelected:
         data.diffLineNumber !== null &&
         isInSelection(
@@ -1165,12 +1343,7 @@ export class SideBySideDiff extends React.Component<
     rowNumber: number,
     column: DiffColumn
   ): number | null {
-    const { diff } = this.state
-    const rows = getDiffRows(
-      diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
-    )
+    const rows = this.getCurrentDiffRows()
     const row = rows[rowNumber]
 
     if (row === undefined) {
@@ -1458,7 +1631,7 @@ export class SideBySideDiff extends React.Component<
       return
     }
 
-    if (hideWhitespaceInDiff) {
+    if (hideWhitespaceInDiff || this.hasDiffestOverlay()) {
       return
     }
 
@@ -1541,7 +1714,7 @@ export class SideBySideDiff extends React.Component<
    * @param hunkStartLine The start line of the hunk where the user clicked.
    */
   private onContextMenuHunk = (hunkStartLine: number) => {
-    if (!canSelect(this.props.file)) {
+    if (!this.canSelectLines()) {
       return
     }
 
@@ -1648,10 +1821,9 @@ export class SideBySideDiff extends React.Component<
 
   private startSearch = (searchQuery: string, direction: SearchDirection) => {
     const searchResults = calcSearchTokens(
-      this.state.diff,
+      this.getCurrentDiffRows(),
       this.props.showSideBySideDiff,
-      searchQuery,
-      this.canExpandDiff()
+      searchQuery
     )
 
     if (searchResults === undefined || searchResults.length === 0) {
@@ -2062,10 +2234,9 @@ class SearchResults {
 }
 
 function calcSearchTokens(
-  diff: ITextDiff,
+  rows: ReadonlyArray<SimplifiedDiffRow>,
   showSideBySideDiffs: boolean,
-  searchQuery: string,
-  enableDiffExpansion: boolean
+  searchQuery: string
 ): SearchResults | undefined {
   if (searchQuery.length === 0) {
     return undefined
@@ -2073,7 +2244,6 @@ function calcSearchTokens(
 
   const hits = new SearchResults()
   const searchRe = new RegExp(escapeRegExp(searchQuery), 'gi')
-  const rows = getDiffRows(diff, showSideBySideDiffs, enableDiffExpansion)
 
   for (const [rowNumber, row] of rows.entries()) {
     if (row.type === DiffRowType.Hunk) {

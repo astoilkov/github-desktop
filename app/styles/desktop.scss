@@ -9,3 +9,6 @@
 @import 'type';
 
 @import 'ui';
+
+// Fork: after `ui` so it lands after `ui/_diff`, whose rules it sits on top of.
+@import 'ui/diffest-diff';

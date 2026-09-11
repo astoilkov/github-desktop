@@ -46,6 +46,10 @@ const rendererConfig = merge({}, common.renderer, config, {
   },
   output: {
     publicPath,
+    // Fork: the page is a `file://` document, and a worker must have the
+    // page's origin, so a worker cannot load from the dev server. `./` loads it
+    // from `out/` next to `index.html`, where `compile:dev` writes it.
+    workerPublicPath: './',
   },
   module: {
     rules: [
