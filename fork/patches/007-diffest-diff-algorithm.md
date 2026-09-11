@@ -124,13 +124,14 @@ New files, which hold most of the code and cannot conflict:
   - an added or deleted file;
   - a rename that changed the extension;
   - `!canBeExpanded` (the new side was cut mid-line at 1MB);
-  - more than **600 lines** on either side.
+  - more than **700 lines** on either side.
 
   The line cap exists because Diffest's cost grows with about the cube of the
-  line count: 150 lines take 0.2 s, 300 take 0.8 s, 600 take 6 s, and 2,259
-  take three minutes. Answers, `null` included, are cached in a `QuickLRU`
-  keyed on `sha1(before + after)`, never on `file.id`, which stays the same
-  across an edit.
+  line count. On this repo's own history, 300 lines take 0.2 s, 500 take
+  0.9 s, 700 take 1.6 s, 1,000 take 7 s, and 1,500 take 28 s. The cap keeps a
+  typical file under 2 s; a few near it take up to 3.5 s. Answers, `null`
+  included, are cached in a `QuickLRU` keyed on `sha1(before + after)`, never
+  on `file.id`, which stays the same across an edit.
 
   Each run gets its own `Worker`, which is terminated when the signal aborts.
   So a file switch stops at once, not after seconds of work for a file no
@@ -224,7 +225,7 @@ New files, which hold most of the code and cannot conflict:
 3. `yarn test:unit app/test/unit/diffest-tokens-test.ts` passes.
 4. `yarn compile:dev` passes and emits `out/app_src_lib_diffest_worker_ts.js`.
    The end of that file must not have `module.exports`.
-5. `yarn build:dev && yarn start`. Open a `.ts` file under 600 lines where one
+5. `yarn build:dev && yarn start`. Open a `.ts` file under 700 lines where one
    constant changed. Press ⇧⌘\\. Within a second, only the constant is painted:
    red on the left, yellow on the right, and the row is neither green nor red.
    Press ⇧⌘\\ again: git's row colours come back at once.
@@ -234,7 +235,7 @@ New files, which hold most of the code and cannot conflict:
    diff, and the marks that land match the file on screen.
 9. Plain git diff, with no `.diffest-overlay`, for: a `.md` file, a binary
    file, an added file, a deleted file, a `util.js → util.ts` rename, and a
-   file over 600 lines.
+   file over 700 lines.
 10. With Diffest on, in Unified, change a function signature by adding a
     parameter: only the new line shows, with the parameter painted green.
     Change `order.push(x)` to `unsorted.push(x)`: one row shows
@@ -246,7 +247,7 @@ New files, which hold most of the code and cannot conflict:
 
 ## Caveats
 
-- **The 600-line cap leaves most large files to git.** A faster algorithm is
+- **The 700-line cap leaves most large files to git.** A faster algorithm is
   the fix, not a higher cap.
 - In dev, the worker comes from the last `compile:dev`, not from the dev
   server. After an edit to `app/src/lib/diffest/`, run `yarn compile:dev` again.

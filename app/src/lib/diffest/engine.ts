@@ -29,12 +29,12 @@ const DiffestExtensions = new Set([
 /**
  * Past this many lines, on either side, the file is left to git.
  *
- * Diffest's cost grows with about the cube of the line count: 150 lines take
- * 0.2 s, 300 take 0.8 s, 600 take 6 s, and 2,259 take three minutes. It runs
- * in a worker, so the UI does not wait, but marks that arrive minutes late
- * help nobody. This cap keeps the wait to a few seconds.
+ * Diffest's cost grows with about the cube of the line count: on this repo's
+ * history, 700 lines take about 1.6 s and 1,000 take 7 s. It runs in a worker,
+ * so the UI does not wait, but late marks help nobody. This cap keeps a
+ * typical file under 2 s.
  */
-const MaxDiffestLines = 600
+const MaxDiffestLines = 700
 
 /**
  * The answers for the last few files, `null` included. A click back to a file
