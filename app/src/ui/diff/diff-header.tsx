@@ -5,6 +5,8 @@ import { IDiff, DiffType } from '../../models/diff'
 import { Octicon, iconForStatus } from '../octicons'
 import { mapStatus } from '../../lib/status'
 import { DiffOptions } from './diff-options'
+import { CopyButton } from '../copy-button'
+import * as octicons from '../octicons/octicons.generated'
 
 interface IDiffHeaderProps {
   readonly path: string
@@ -25,6 +27,12 @@ interface IDiffHeaderProps {
 
   /** Called when the user opens the diff options popover */
   readonly onDiffOptionsOpened: () => void
+
+  /**
+   * The text to copy with the location button. The button is hidden when this
+   * is not set.
+   */
+  readonly locationText?: string
 }
 
 /** Displays information about a file */
@@ -37,6 +45,7 @@ export class DiffHeader extends React.Component<IDiffHeaderProps, {}> {
       <div className="header">
         <PathLabel path={this.props.path} status={this.props.status} />
 
+        {this.renderCopyLocationButton()}
         {this.renderDiffOptions()}
 
         <Octicon
@@ -45,6 +54,20 @@ export class DiffHeader extends React.Component<IDiffHeaderProps, {}> {
           title={fileStatus}
         />
       </div>
+    )
+  }
+
+  private renderCopyLocationButton() {
+    if (this.props.locationText === undefined) {
+      return null
+    }
+
+    return (
+      <CopyButton
+        ariaLabel="Copy the repository path and file path"
+        copyContent={this.props.locationText}
+        symbol={octicons.location}
+      />
     )
   }
 

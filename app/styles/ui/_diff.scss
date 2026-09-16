@@ -923,6 +923,22 @@
       flex-shrink: 0;
     }
 
+    .copy-button {
+      margin-right: var(--spacing-half);
+      flex-shrink: 0;
+
+      // Removing default button styles
+      background: transparent;
+      border: none;
+      padding: 0;
+      height: auto;
+      min-width: 16px;
+
+      :hover {
+        color: var(--text-secondary-color);
+      }
+    }
+
     .octicon.status {
       flex-shrink: 0;
       vertical-align: text-bottom;

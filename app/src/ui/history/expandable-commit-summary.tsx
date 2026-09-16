@@ -1,6 +1,4 @@
 import * as React from 'react'
-import * as Os from 'os'
-import * as Path from 'path'
 import classNames from 'classnames'
 
 import { Octicon } from '../octicons'
@@ -18,6 +16,7 @@ import { IChangesetData } from '../../lib/git'
 import uniqWith from 'lodash/uniqWith'
 import { LinkButton } from '../lib/link-button'
 import { UnreachableCommitsTab } from './unreachable-commits-dialog'
+import { getLocationText } from '../../lib/get-location-text'
 import memoizeOne from 'memoize-one'
 import { Button } from '../lib/button'
 import { Avatar } from '../lib/avatar'
@@ -450,10 +449,10 @@ export class ExpandableCommitSummary extends React.Component<
         <CopyButton ariaLabel="Copy the full SHA" copyContent={sha} />
         <CopyButton
           ariaLabel="Copy the repository path, SHA, and file path"
-          copyContent={getCommitLocation(
+          copyContent={getLocationText(
             this.props.repository,
             sha,
-            this.props.selectedFile
+            this.props.selectedFile?.path ?? null
           )}
           symbol={octicons.location}
         />
@@ -598,34 +597,4 @@ export class ExpandableCommitSummary extends React.Component<
       </div>
     )
   }
-}
-
-/** Text that another tool reads to find the commit and the selected file. */
-function getCommitLocation(
-  repository: Repository,
-  sha: string,
-  selectedFile: CommittedFileChange | null
-) {
-  const lines = [
-    `Repository: ${replaceHomeDirWithTilde(repository.path)}`,
-    `Commit: ${sha}`,
-  ]
-
-  if (selectedFile !== null) {
-    lines.push(`File: ${Path.normalize(selectedFile.path)}`)
-  }
-
-  return lines.join('\n')
-}
-
-function replaceHomeDirWithTilde(path: string) {
-  const homeDir = Os.homedir()
-
-  if (path === homeDir) {
-    return '~'
-  }
-
-  return path.startsWith(homeDir + Path.sep)
-    ? '~' + path.slice(homeDir.length)
-    : path
 }

@@ -1,3 +1,69 @@
+diff --git a/app/src/lib/get-location-text.ts b/app/src/lib/get-location-text.ts
+new file mode 100644
+index 0000000000..525fa6b767
+--- /dev/null
++++ b/app/src/lib/get-location-text.ts
+@@ -0,0 +1,36 @@
++import * as Os from 'os'
++import * as Path from 'path'
++import { Repository } from '../models/repository'
++
++/**
++ * Text that another tool reads to find the commit and the file. A `null` SHA
++ * means the file has uncommitted changes.
++ */
++export function getLocationText(
++  repository: Repository,
++  sha: string | null,
++  filePath: string | null
++) {
++  const lines = [
++    `Repository: ${replaceHomeDirWithTilde(repository.path)}`,
++    `Commit: ${sha ?? 'uncommitted changes'}`,
++  ]
++
++  if (filePath !== null) {
++    lines.push(`File: ${Path.normalize(filePath)}`)
++  }
++
++  return lines.join('\n')
++}
++
++function replaceHomeDirWithTilde(path: string) {
++  const homeDir = Os.homedir()
++
++  if (path === homeDir) {
++    return '~'
++  }
++
++  return path.startsWith(homeDir + Path.sep)
++    ? '~' + path.slice(homeDir.length)
++    : path
++}
+diff --git a/app/src/ui/changes/changes.tsx b/app/src/ui/changes/changes.tsx
+index b03e120d04..abcb320835 100644
+--- a/app/src/ui/changes/changes.tsx
++++ b/app/src/ui/changes/changes.tsx
+@@ -11,6 +11,7 @@ import { Repository } from '../../models/repository'
+ import { Dispatcher } from '../dispatcher'
+ import { SeamlessDiffSwitcher } from '../diff/seamless-diff-switcher'
+ import { PopupType } from '../../models/popup'
++import { getLocationText } from '../../lib/get-location-text'
+ 
+ interface IChangesProps {
+   readonly repository: Repository
+@@ -111,6 +112,11 @@ export class Changes extends React.Component<IChangesProps, {}> {
+           hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
+           onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
+           onDiffOptionsOpened={this.props.onDiffOptionsOpened}
++          locationText={getLocationText(
++            this.props.repository,
++            null,
++            this.props.file.path
++          )}
+         />
+ 
+         <SeamlessDiffSwitcher
 diff --git a/app/src/ui/copy-button.tsx b/app/src/ui/copy-button.tsx
 index f23756de79..23e7e7b4a3 100644
 --- a/app/src/ui/copy-button.tsx
@@ -32,18 +98,66 @@ index f23756de79..23e7e7b4a3 100644
  
      return <Octicon symbol={symbol} height={24} />
    }
+diff --git a/app/src/ui/diff/diff-header.tsx b/app/src/ui/diff/diff-header.tsx
+index fe5907d6b0..7c8f06a2f1 100644
+--- a/app/src/ui/diff/diff-header.tsx
++++ b/app/src/ui/diff/diff-header.tsx
+@@ -5,6 +5,8 @@ import { IDiff, DiffType } from '../../models/diff'
+ import { Octicon, iconForStatus } from '../octicons'
+ import { mapStatus } from '../../lib/status'
+ import { DiffOptions } from './diff-options'
++import { CopyButton } from '../copy-button'
++import * as octicons from '../octicons/octicons.generated'
+ 
+ interface IDiffHeaderProps {
+   readonly path: string
+@@ -25,6 +27,12 @@ interface IDiffHeaderProps {
+ 
+   /** Called when the user opens the diff options popover */
+   readonly onDiffOptionsOpened: () => void
++
++  /**
++   * The text to copy with the location button. The button is hidden when this
++   * is not set.
++   */
++  readonly locationText?: string
+ }
+ 
+ /** Displays information about a file */
+@@ -37,6 +45,7 @@ export class DiffHeader extends React.Component<IDiffHeaderProps, {}> {
+       <div className="header">
+         <PathLabel path={this.props.path} status={this.props.status} />
+ 
++        {this.renderCopyLocationButton()}
+         {this.renderDiffOptions()}
+ 
+         <Octicon
+@@ -48,6 +57,20 @@ export class DiffHeader extends React.Component<IDiffHeaderProps, {}> {
+     )
+   }
+ 
++  private renderCopyLocationButton() {
++    if (this.props.locationText === undefined) {
++      return null
++    }
++
++    return (
++      <CopyButton
++        ariaLabel="Copy the repository path and file path"
++        copyContent={this.props.locationText}
++        symbol={octicons.location}
++      />
++    )
++  }
++
+   private renderDiffOptions() {
+     if (this.props.diff?.kind === DiffType.Submodule) {
+       return null
 diff --git a/app/src/ui/history/expandable-commit-summary.tsx b/app/src/ui/history/expandable-commit-summary.tsx
-index 6dd3f272ce..add441d1bc 100644
+index 6dd3f272ce..236524d776 100644
 --- a/app/src/ui/history/expandable-commit-summary.tsx
 +++ b/app/src/ui/history/expandable-commit-summary.tsx
-@@ -1,4 +1,6 @@
- import * as React from 'react'
-+import * as Os from 'os'
-+import * as Path from 'path'
- import classNames from 'classnames'
- 
- import { Octicon } from '../octicons'
-@@ -6,6 +8,7 @@ import * as octicons from '../octicons/octicons.generated'
+@@ -6,6 +6,7 @@ import * as octicons from '../octicons/octicons.generated'
  import { RichText } from '../lib/rich-text'
  import { Repository } from '../../models/repository'
  import { Commit } from '../../models/commit'
@@ -51,7 +165,15 @@ index 6dd3f272ce..add441d1bc 100644
  import { getAvatarUsersForCommit, IAvatarUser } from '../../models/avatar'
  import { AvatarStack } from '../lib/avatar-stack'
  import { CommitAttribution } from '../lib/commit-attribution'
-@@ -27,6 +30,7 @@ interface IExpandableCommitSummaryProps {
+@@ -15,6 +16,7 @@ import { IChangesetData } from '../../lib/git'
+ import uniqWith from 'lodash/uniqWith'
+ import { LinkButton } from '../lib/link-button'
+ import { UnreachableCommitsTab } from './unreachable-commits-dialog'
++import { getLocationText } from '../../lib/get-location-text'
+ import memoizeOne from 'memoize-one'
+ import { Button } from '../lib/button'
+ import { Avatar } from '../lib/avatar'
+@@ -27,6 +29,7 @@ interface IExpandableCommitSummaryProps {
    readonly selectedCommits: ReadonlyArray<Commit>
    readonly shasInDiff: ReadonlyArray<string>
    readonly changesetData: IChangesetData
@@ -59,56 +181,22 @@ index 6dd3f272ce..add441d1bc 100644
    readonly emoji: Map<string, Emoji>
  
    /**
-@@ -444,6 +448,15 @@ export class ExpandableCommitSummary extends React.Component<
+@@ -444,6 +447,15 @@ export class ExpandableCommitSummary extends React.Component<
          <Octicon symbol={octicons.gitCommit} />
          <div className="ref selectable">{isExpanded ? sha : shortSha}</div>
          <CopyButton ariaLabel="Copy the full SHA" copyContent={sha} />
 +        <CopyButton
 +          ariaLabel="Copy the repository path, SHA, and file path"
-+          copyContent={getCommitLocation(
++          copyContent={getLocationText(
 +            this.props.repository,
 +            sha,
-+            this.props.selectedFile
++            this.props.selectedFile?.path ?? null
 +          )}
 +          symbol={octicons.location}
 +        />
        </div>
      )
    }
-@@ -586,3 +599,33 @@ export class ExpandableCommitSummary extends React.Component<
-     )
-   }
- }
-+
-+/** Text that another tool reads to find the commit and the selected file. */
-+function getCommitLocation(
-+  repository: Repository,
-+  sha: string,
-+  selectedFile: CommittedFileChange | null
-+) {
-+  const lines = [
-+    `Repository: ${replaceHomeDirWithTilde(repository.path)}`,
-+    `Commit: ${sha}`,
-+  ]
-+
-+  if (selectedFile !== null) {
-+    lines.push(`File: ${Path.normalize(selectedFile.path)}`)
-+  }
-+
-+  return lines.join('\n')
-+}
-+
-+function replaceHomeDirWithTilde(path: string) {
-+  const homeDir = Os.homedir()
-+
-+  if (path === homeDir) {
-+    return '~'
-+  }
-+
-+  return path.startsWith(homeDir + Path.sep)
-+    ? '~' + path.slice(homeDir.length)
-+    : path
-+}
 diff --git a/app/src/ui/history/selected-commits.tsx b/app/src/ui/history/selected-commits.tsx
 index e4b29a88fb..3cfcbbe62a 100644
 --- a/app/src/ui/history/selected-commits.tsx
@@ -121,3 +209,30 @@ index e4b29a88fb..3cfcbbe62a 100644
          emoji={this.props.emoji}
          repository={this.props.repository}
          onExpandChanged={this.onExpandChanged}
+diff --git a/app/styles/ui/_diff.scss b/app/styles/ui/_diff.scss
+index fe53e50aa7..00f5d7d94b 100644
+--- a/app/styles/ui/_diff.scss
++++ b/app/styles/ui/_diff.scss
+@@ -923,6 +923,22 @@
+       flex-shrink: 0;
+     }
+ 
++    .copy-button {
++      margin-right: var(--spacing-half);
++      flex-shrink: 0;
++
++      // Removing default button styles
++      background: transparent;
++      border: none;
++      padding: 0;
++      height: auto;
++      min-width: 16px;
++
++      :hover {
++        color: var(--text-secondary-color);
++      }
++    }
++
+     .octicon.status {
+       flex-shrink: 0;
+       vertical-align: text-bottom;

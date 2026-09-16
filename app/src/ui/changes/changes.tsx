@@ -11,6 +11,7 @@ import { Repository } from '../../models/repository'
 import { Dispatcher } from '../dispatcher'
 import { SeamlessDiffSwitcher } from '../diff/seamless-diff-switcher'
 import { PopupType } from '../../models/popup'
+import { getLocationText } from '../../lib/get-location-text'
 
 interface IChangesProps {
   readonly repository: Repository
@@ -111,6 +112,11 @@ export class Changes extends React.Component<IChangesProps, {}> {
           hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
           onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
           onDiffOptionsOpened={this.props.onDiffOptionsOpened}
+          locationText={getLocationText(
+            this.props.repository,
+            null,
+            this.props.file.path
+          )}
         />
 
         <SeamlessDiffSwitcher
