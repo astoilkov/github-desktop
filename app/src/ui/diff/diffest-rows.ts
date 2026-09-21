@@ -1,13 +1,13 @@
 import memoize from 'memoize-one'
 import { DiffRowType, SimplifiedDiffRow } from './diff-helpers'
-import type { IDiffestTokens, IInlineDeletion } from '../../lib/diffest/tokens'
+import type { IDiffestTokens, IRemovedText } from '../../lib/diffest/tokens'
 
 /** The rows the diff shows, and the removed text that goes into them. */
 export interface IDiffestRows {
   readonly rows: ReadonlyArray<SimplifiedDiffRow>
 
   /** Removed text to put in, by the new line it goes into, counted from 0. */
-  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
+  readonly inline: ReadonlyMap<number, ReadonlyArray<IRemovedText>>
 }
 
 type Side = 'before' | 'after'
@@ -35,6 +35,9 @@ interface IPlacedRow {
  * reports as removed from it goes into the new row, just before what replaced
  * it. In Split, an old line and a new line sit side by side when Diffest puts
  * them on one view line, not when git lists them at the same position.
+ *
+ * In both, the text an edit took out of a line that moved or was carried goes
+ * into the new row. The row the line left shows the line and not the edit.
  */
 export const withDiffestRows = memoize(function (
   rows: ReadonlyArray<SimplifiedDiffRow>,
@@ -48,7 +51,7 @@ export const withDiffestRows = memoize(function (
   if (showSideBySideDiff) {
     return {
       rows: bySection(rows, section => pairInViewOrder(section, overlay)),
-      inline: new Map(),
+      inline: byLine(overlay.landedDeletions),
     }
   }
 
@@ -56,8 +59,24 @@ export const withDiffestRows = memoize(function (
   const inOrder = (section: ReadonlyArray<SimplifiedDiffRow>) =>
     inViewOrder(section, overlay).map(placed => placed.row)
 
-  return { rows: bySection(shown, inOrder), inline }
+  return {
+    rows: bySection(shown, inOrder),
+    inline: byLine([...inline, ...overlay.landedDeletions]),
+  }
 })
+
+/** Removed text, grouped by the new line it goes into. */
+function byLine(
+  removed: ReadonlyArray<IRemovedText>
+): ReadonlyMap<number, ReadonlyArray<IRemovedText>> {
+  const lines = new Map<number, Array<IRemovedText>>()
+  for (const text of removed) {
+    const inLine = lines.get(text.afterLine) ?? []
+    inLine.push(text)
+    lines.set(text.afterLine, inLine)
+  }
+  return lines
+}
 
 /**
  * Hides the old row of each line Diffest keeps, and hands the text it reports
@@ -70,7 +89,7 @@ function withRemovedTextInline(
   overlay: IDiffestTokens
 ): {
   readonly shown: ReadonlyArray<SimplifiedDiffRow>
-  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
+  readonly inline: ReadonlyArray<IRemovedText>
 } {
   // Row line numbers count from 1, Diffest's from 0.
   const deletedLines = new Set<number>()
@@ -94,14 +113,9 @@ function withRemovedTextInline(
     )
   )
 
-  const inline = new Map<number, Array<IInlineDeletion>>()
-  for (const deletion of overlay.inlineDeletions) {
-    if (hidden.has(deletion.beforeLine)) {
-      const inLine = inline.get(deletion.afterLine) ?? []
-      inLine.push(deletion)
-      inline.set(deletion.afterLine, inLine)
-    }
-  }
+  const inline = overlay.inlineDeletions.filter(deletion =>
+    hidden.has(deletion.beforeLine)
+  )
 
   return { shown: withoutDeletedRows(rows, hidden), inline }
 }

@@ -1,5 +1,5 @@
 import { ILineTokens } from '../highlighter/types'
-import type { IInlineDeletion } from './tokens'
+import type { IRemovedText } from './tokens'
 
 /**
  * A new line with the text Diffest reports as removed from it put back in,
@@ -12,7 +12,7 @@ import type { IInlineDeletion } from './tokens'
 export function withInlineDeletions(
   content: string,
   layers: ReadonlyArray<ILineTokens>,
-  deletions: ReadonlyArray<IInlineDeletion>
+  deletions: ReadonlyArray<IRemovedText>
 ): { readonly content: string; readonly tokens: ReadonlyArray<ILineTokens> } {
   const sorted = [...deletions].sort((a, b) => a.column - b.column)
   const inserted: ILineTokens = {}
@@ -36,7 +36,7 @@ export function withInlineDeletions(
 
 function shiftLayer(
   layer: ILineTokens,
-  deletions: ReadonlyArray<IInlineDeletion>
+  deletions: ReadonlyArray<IRemovedText>
 ): ILineTokens {
   const shifted: ILineTokens = {}
 

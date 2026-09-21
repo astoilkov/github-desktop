@@ -65,6 +65,7 @@ function overlay(
     unmarkedBeforeLines,
     keptBeforeLines: [],
     inlineDeletions: [],
+    landedDeletions: [],
     beforeLineRows,
     afterLineRows,
   }
@@ -235,6 +236,23 @@ describe('withDiffestRows', () => {
     ])
     // `withCommand` goes in front of `command`, and in front of `prompt`.
     assert.deepStrictEqual([...inline.keys()].sort(), [6, 8])
+  })
+})
+
+describe('withDiffestRows landed deletions', () => {
+  const removed = { afterLine: 1, column: 12, text: 'owner' }
+  const landed = { ...overlay([0, 1], [0, 1]), landedDeletions: [removed] }
+
+  it('puts the text an edit took out of a moved line into its new row in Unified', () => {
+    const { inline } = withDiffestRows([added(2)], landed, false)
+
+    assert.deepStrictEqual(inline.get(1), [removed])
+  })
+
+  it('puts it into the new row in Split as well', () => {
+    const { inline } = withDiffestRows([added(2)], landed, true)
+
+    assert.deepStrictEqual(inline.get(1), [removed])
   })
 })
 

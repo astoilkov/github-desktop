@@ -1,109 +1,6 @@
-diff --git a/app/src/ui/diff/side-by-side-diff.tsx b/app/src/ui/diff/side-by-side-diff.tsx
-index 992ebe2b87..c89be48ca8 100644
---- a/app/src/ui/diff/side-by-side-diff.tsx
-+++ b/app/src/ui/diff/side-by-side-diff.tsx
-@@ -19,8 +19,9 @@ import { Disposable } from 'event-kit'
- import { DiffAlgorithm, diffAlgorithmStore } from './diff-algorithm'
- import { getDiffestOverlay } from '../../lib/diffest/engine'
- import { watchMoveHover } from './diffest-move-hover'
--import type { IDiffestTokens, IInlineDeletion } from '../../lib/diffest/tokens'
-+import type { IDiffestTokens } from '../../lib/diffest/tokens'
- import { withInlineDeletions } from '../../lib/diffest/inline'
-+import { withDiffestRows } from './diffest-rows'
- import {
-   assertNever,
-   assertNonNullable,
-@@ -1970,87 +1971,6 @@ const getDiffRows = memoize(function (
-   return outputRows
- })
- 
--/**
-- * The rows without the deleted rows of old lines Diffest reads as kept: a line
-- * it edited in place, re-indented, or joined onto another. Git shows such a
-- * line as removed and then added again. Diffest shows it once.
-- *
-- * In Unified, the old row goes, and any text Diffest reports as removed from it
-- * goes into the new row instead, just before what replaced it. That needs
-- * every removed piece of the old line to land on a row git shows as added.
-- * Where one cannot, the old row stays and nothing goes in, so no text is lost
-- * or shown twice.
-- *
-- * In Split, the old line already sits beside the new one, so only old rows with
-- * no mark at all go. `Modified` rows stay: pairing the old line with the new
-- * one is what Split is for.
-- */
--const withDiffestRows = memoize(function (
--  rows: ReadonlyArray<SimplifiedDiffRow>,
--  overlay: IDiffestTokens | undefined,
--  showSideBySideDiff: boolean
--): IDiffestRows {
--  if (overlay === undefined) {
--    return { rows, inline: new Map() }
--  }
--
--  if (showSideBySideDiff) {
--    const unmarked = new Set(overlay.unmarkedBeforeLines)
--    return { rows: withoutDeletedRows(rows, unmarked), inline: new Map() }
--  }
--
--  // Row line numbers count from 1, Diffest's from 0.
--  const deletedLines = new Set<number>()
--  const addedLines = new Set<number>()
--  for (const row of rows) {
--    if (row.type === DiffRowType.Deleted) {
--      deletedLines.add(row.data.lineNumber - 1)
--    } else if (row.type === DiffRowType.Added) {
--      addedLines.add(row.data.lineNumber - 1)
--    }
--  }
--
--  const blocked = new Set(
--    overlay.inlineDeletions
--      .filter(deletion => !addedLines.has(deletion.afterLine))
--      .map(deletion => deletion.beforeLine)
--  )
--  const hidden = new Set(
--    overlay.keptBeforeLines.filter(
--      line => deletedLines.has(line) && !blocked.has(line)
--    )
--  )
--
--  const inline = new Map<number, Array<IInlineDeletion>>()
--  for (const deletion of overlay.inlineDeletions) {
--    if (hidden.has(deletion.beforeLine)) {
--      const inLine = inline.get(deletion.afterLine) ?? []
--      inLine.push(deletion)
--      inline.set(deletion.afterLine, inLine)
--    }
--  }
--
--  return { rows: withoutDeletedRows(rows, hidden), inline }
--})
--
--/** The rows the diff shows, and the removed text that goes into them. */
--interface IDiffestRows {
--  readonly rows: ReadonlyArray<SimplifiedDiffRow>
--
--  /** Removed text to put in, by the new line it goes into, counted from 0. */
--  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
--}
--
--function withoutDeletedRows(
--  rows: ReadonlyArray<SimplifiedDiffRow>,
--  lines: ReadonlySet<number>
--): ReadonlyArray<SimplifiedDiffRow> {
--  return rows.filter(
--    row =>
--      row.type !== DiffRowType.Deleted || !lines.has(row.data.lineNumber - 1)
--  )
--}
--
- /**
-  * Returns an array of rows with the needed data to render a side-by-side diff
-  * with them.
 diff --git a/app/src/lib/diffest/engine.ts b/app/src/lib/diffest/engine.ts
 new file mode 100644
-index 0000000000..2dd9c79b1d
+index 0000000000..9f642c547c
 --- /dev/null
 +++ b/app/src/lib/diffest/engine.ts
 @@ -0,0 +1,209 @@
@@ -138,12 +35,12 @@ index 0000000000..2dd9c79b1d
 +/**
 + * Past this many lines, on either side, the file is left to git.
 + *
-+ * Diffest's cost grows with about the cube of the line count: 150 lines take
-+ * 0.2 s, 300 take 0.8 s, 600 take 6 s, and 2,259 take three minutes. It runs
-+ * in a worker, so the UI does not wait, but marks that arrive minutes late
-+ * help nobody. This cap keeps the wait to a few seconds.
++ * Diffest's cost grows with about the cube of the line count: on this repo's
++ * history, 700 lines take about 1.6 s and 1,000 take 7 s. It runs in a worker,
++ * so the UI does not wait, but late marks help nobody. This cap keeps a
++ * typical file under 2 s.
 + */
-+const MaxDiffestLines = 600
++const MaxDiffestLines = 700
 +
 +/**
 + * The answers for the last few files, `null` included. A click back to a file
@@ -318,12 +215,12 @@ index 0000000000..2dd9c79b1d
 +}
 diff --git a/app/src/lib/diffest/inline.ts b/app/src/lib/diffest/inline.ts
 new file mode 100644
-index 0000000000..b6125fa378
+index 0000000000..790f3964ce
 --- /dev/null
 +++ b/app/src/lib/diffest/inline.ts
 @@ -0,0 +1,73 @@
 +import { ILineTokens } from '../highlighter/types'
-+import type { IInlineDeletion } from './tokens'
++import type { IRemovedText } from './tokens'
 +
 +/**
 + * A new line with the text Diffest reports as removed from it put back in,
@@ -336,7 +233,7 @@ index 0000000000..b6125fa378
 +export function withInlineDeletions(
 +  content: string,
 +  layers: ReadonlyArray<ILineTokens>,
-+  deletions: ReadonlyArray<IInlineDeletion>
++  deletions: ReadonlyArray<IRemovedText>
 +): { readonly content: string; readonly tokens: ReadonlyArray<ILineTokens> } {
 +  const sorted = [...deletions].sort((a, b) => a.column - b.column)
 +  const inserted: ILineTokens = {}
@@ -360,7 +257,7 @@ index 0000000000..b6125fa378
 +
 +function shiftLayer(
 +  layer: ILineTokens,
-+  deletions: ReadonlyArray<IInlineDeletion>
++  deletions: ReadonlyArray<IRemovedText>
 +): ILineTokens {
 +  const shifted: ILineTokens = {}
 +
@@ -397,10 +294,10 @@ index 0000000000..b6125fa378
 +}
 diff --git a/app/src/lib/diffest/tokens.ts b/app/src/lib/diffest/tokens.ts
 new file mode 100644
-index 0000000000..2b301dc726
+index 0000000000..18b7c656eb
 --- /dev/null
 +++ b/app/src/lib/diffest/tokens.ts
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,515 @@
 +import { drawn, lineSide, moves } from 'diffest'
 +import type { DiffView, Segment } from 'diffest'
 +import { ILineTokens, ITokens } from '../highlighter/types'
@@ -429,6 +326,14 @@ index 0000000000..2b301dc726
 +  readonly inlineDeletions: ReadonlyArray<IInlineDeletion>
 +
 +  /**
++   * Text an edit took out of a line that moved or was carried. The old version
++   * holds it on the line the move left, which is painted as the line and not
++   * as what the edit took out. So it goes into the new line, whatever git
++   * shows for the old one.
++   */
++  readonly landedDeletions: ReadonlyArray<IRemovedText>
++
++  /**
 +   * The row of Diffest's view each old line starts on, by line counted from 0.
 +   * `null` for a line with no text, which has no place of its own in the view.
 +   */
@@ -443,10 +348,13 @@ index 0000000000..2b301dc726
 + * the new line, just before what replaced it: `{~order~unsorted~}.push(x)`
 + * reads as `order`, then `unsorted`, then `.push(x)` once.
 + */
-+export interface IInlineDeletion {
++export interface IInlineDeletion extends IRemovedText {
 +  /** The old line the text came from, counted from 0. */
 +  readonly beforeLine: number
++}
 +
++/** Removed text, and the place in the new version it goes into. */
++export interface IRemovedText {
 +  /** The new line it goes into, counted from 0. */
 +  readonly afterLine: number
 +
@@ -474,6 +382,12 @@ index 0000000000..2b301dc726
 +
 +  /** On the new side: removed text that goes in here. It holds no file text. */
 +  readonly inline?: string
++
++  /**
++   * On the new side: text an edit took out of a line that moved or was
++   * carried. Like `inline`, but with no anchor on the old side to pair with.
++   */
++  readonly landed?: string
 +}
 +
 +/** One side of the view, placed on the file. */
@@ -489,6 +403,9 @@ index 0000000000..2b301dc726
 +
 +  /** Where each anchor or inline piece landed, in the order they came. */
 +  readonly anchors: ReadonlyArray<number>
++
++  /** Where each landed piece goes, in the order they came. */
++  readonly landings: ReadonlyArray<number>
 +}
 +
 +/**
@@ -528,6 +445,9 @@ index 0000000000..2b301dc726
 +  const removed = afterPieces.flatMap(piece =>
 +    piece.inline === undefined ? [] : [piece.inline]
 +  )
++  const landed = afterPieces.flatMap(piece =>
++    piece.landed === undefined ? [] : [piece.landed]
++  )
 +
 +  return {
 +    before: getTokens(before, old.paints),
@@ -540,6 +460,10 @@ index 0000000000..2b301dc726
 +      const { line, column } = locate(after, now.anchors[index])
 +      const beforeLine = locate(before, old.anchors[index]).line
 +      return { beforeLine, afterLine: line, column, text }
++    }),
++    landedDeletions: landed.map((text, index) => {
++      const { line, column } = locate(after, now.landings[index])
++      return { afterLine: line, column, text }
 +    }),
 +  }
 +}
@@ -633,15 +557,23 @@ index 0000000000..2b301dc726
 +          : [{ text: segment.before, paint, kept, row, anchor: both }]
 +      }
 +      const changed = { text: segment.after, paint: 'df-changed', kept, row }
-+      return both && !segment.carried
-+        ? [getInlinePiece(segment.before, row), changed]
-+        : [changed]
++      if (both && !segment.carried) {
++        return [getInlinePiece(segment.before, row), changed]
++      }
++      // The old text of a change the line or the text carried here sits on
++      // another line, where nothing paints it as removed. It goes in here, or
++      // no row shows what the change took out.
++      return [getLandedPiece(segment.before, row), changed]
 +    }
 +  }
 +}
 +
 +function getInlinePiece(text: string, row: number): IPiece {
 +  return { text: '', paint: null, kept: true, row, inline: text }
++}
++
++function getLandedPiece(text: string, row: number): IPiece {
++  return { text: '', paint: null, kept: false, row, landed: text }
 +}
 +
 +/** The pieces of one side, placed on the file. */
@@ -653,6 +585,7 @@ index 0000000000..2b301dc726
 +  const kept = new Array<boolean | undefined>(file.length)
 +  const rows = new Array<number | undefined>(file.length)
 +  const anchors = new Array<number>()
++  const landings = new Array<number>()
 +  let at = 0
 +  // Whitespace the view passed since the last character it matched. Removed
 +  // text goes in after as much of the file's whitespace, so `x = 2` becoming
@@ -660,12 +593,16 @@ index 0000000000..2b301dc726
 +  let spaces = 0
 +
 +  for (const piece of pieces) {
-+    if (piece.inline !== undefined) {
++    if (piece.inline !== undefined || piece.landed !== undefined) {
 +      let insertAt = at
 +      for (let left = spaces; left > 0 && isSpace(file[insertAt]); left--) {
 +        insertAt++
 +      }
-+      anchors.push(insertAt)
++      if (piece.inline !== undefined) {
++        anchors.push(insertAt)
++      } else {
++        landings.push(insertAt)
++      }
 +      continue
 +    }
 +
@@ -720,7 +657,7 @@ index 0000000000..2b301dc726
 +    at++
 +  }
 +
-+  return at === file.length ? { paints, kept, rows, anchors } : null
++  return at === file.length ? { paints, kept, rows, anchors, landings } : null
 +}
 +
 +/** Runs of one class on one line, keyed by line and by the column they start at. */
@@ -1076,20 +1013,20 @@ index 0000000000..2e9ebd3323
 +}
 diff --git a/app/src/ui/diff/diffest-rows.ts b/app/src/ui/diff/diffest-rows.ts
 new file mode 100644
-index 0000000000..93a2ee44dd
+index 0000000000..d91d36b7a3
 --- /dev/null
 +++ b/app/src/ui/diff/diffest-rows.ts
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,347 @@
 +import memoize from 'memoize-one'
 +import { DiffRowType, SimplifiedDiffRow } from './diff-helpers'
-+import type { IDiffestTokens, IInlineDeletion } from '../../lib/diffest/tokens'
++import type { IDiffestTokens, IRemovedText } from '../../lib/diffest/tokens'
 +
 +/** The rows the diff shows, and the removed text that goes into them. */
 +export interface IDiffestRows {
 +  readonly rows: ReadonlyArray<SimplifiedDiffRow>
 +
 +  /** Removed text to put in, by the new line it goes into, counted from 0. */
-+  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
++  readonly inline: ReadonlyMap<number, ReadonlyArray<IRemovedText>>
 +}
 +
 +type Side = 'before' | 'after'
@@ -1117,6 +1054,9 @@ index 0000000000..93a2ee44dd
 + * reports as removed from it goes into the new row, just before what replaced
 + * it. In Split, an old line and a new line sit side by side when Diffest puts
 + * them on one view line, not when git lists them at the same position.
++ *
++ * In both, the text an edit took out of a line that moved or was carried goes
++ * into the new row. The row the line left shows the line and not the edit.
 + */
 +export const withDiffestRows = memoize(function (
 +  rows: ReadonlyArray<SimplifiedDiffRow>,
@@ -1130,7 +1070,7 @@ index 0000000000..93a2ee44dd
 +  if (showSideBySideDiff) {
 +    return {
 +      rows: bySection(rows, section => pairInViewOrder(section, overlay)),
-+      inline: new Map(),
++      inline: byLine(overlay.landedDeletions),
 +    }
 +  }
 +
@@ -1138,8 +1078,24 @@ index 0000000000..93a2ee44dd
 +  const inOrder = (section: ReadonlyArray<SimplifiedDiffRow>) =>
 +    inViewOrder(section, overlay).map(placed => placed.row)
 +
-+  return { rows: bySection(shown, inOrder), inline }
++  return {
++    rows: bySection(shown, inOrder),
++    inline: byLine([...inline, ...overlay.landedDeletions]),
++  }
 +})
++
++/** Removed text, grouped by the new line it goes into. */
++function byLine(
++  removed: ReadonlyArray<IRemovedText>
++): ReadonlyMap<number, ReadonlyArray<IRemovedText>> {
++  const lines = new Map<number, Array<IRemovedText>>()
++  for (const text of removed) {
++    const inLine = lines.get(text.afterLine) ?? []
++    inLine.push(text)
++    lines.set(text.afterLine, inLine)
++  }
++  return lines
++}
 +
 +/**
 + * Hides the old row of each line Diffest keeps, and hands the text it reports
@@ -1152,7 +1108,7 @@ index 0000000000..93a2ee44dd
 +  overlay: IDiffestTokens
 +): {
 +  readonly shown: ReadonlyArray<SimplifiedDiffRow>
-+  readonly inline: ReadonlyMap<number, ReadonlyArray<IInlineDeletion>>
++  readonly inline: ReadonlyArray<IRemovedText>
 +} {
 +  // Row line numbers count from 1, Diffest's from 0.
 +  const deletedLines = new Set<number>()
@@ -1176,14 +1132,9 @@ index 0000000000..93a2ee44dd
 +    )
 +  )
 +
-+  const inline = new Map<number, Array<IInlineDeletion>>()
-+  for (const deletion of overlay.inlineDeletions) {
-+    if (hidden.has(deletion.beforeLine)) {
-+      const inLine = inline.get(deletion.afterLine) ?? []
-+      inLine.push(deletion)
-+      inline.set(deletion.afterLine, inLine)
-+    }
-+  }
++  const inline = overlay.inlineDeletions.filter(deletion =>
++    hidden.has(deletion.beforeLine)
++  )
 +
 +  return { shown: withoutDeletedRows(rows, hidden), inline }
 +}
@@ -1413,6 +1364,463 @@ index 0000000000..93a2ee44dd
 +): number | undefined {
 +  return lineRows[lineNumber - 1] ?? undefined
 +}
+diff --git a/app/src/ui/diff/side-by-side-diff.tsx b/app/src/ui/diff/side-by-side-diff.tsx
+index 798e738d12..685a03b098 100644
+--- a/app/src/ui/diff/side-by-side-diff.tsx
++++ b/app/src/ui/diff/side-by-side-diff.tsx
+@@ -15,6 +15,13 @@ import {
+   IFileContents,
+ } from './syntax-highlighting'
+ import { ITokens, ILineTokens, IToken } from '../../lib/highlighter/types'
++import { Disposable } from 'event-kit'
++import { DiffAlgorithm, diffAlgorithmStore } from './diff-algorithm'
++import { getDiffestOverlay } from '../../lib/diffest/engine'
++import { watchMoveHover } from './diffest-move-hover'
++import type { IDiffestTokens } from '../../lib/diffest/tokens'
++import { withInlineDeletions } from '../../lib/diffest/inline'
++import { withDiffestRows } from './diffest-rows'
+ import {
+   assertNever,
+   assertNonNullable,
+@@ -173,6 +180,22 @@ interface ISideBySideDiffState {
+    */
+   readonly afterTokens?: ITokens
+ 
++  /**
++   * What Diffest marked in the previous contents of the file, or undefined when
++   * it had nothing to say about it.
++   */
++  readonly beforeDiffestTokens?: ITokens
++
++  /** The same, for the next contents of the file. */
++  readonly afterDiffestTokens?: ITokens
++
++  /**
++   * Diffest's whole answer for the file: which of git's deleted rows to hide,
++   * and the removed text that goes into the new rows instead. Undefined when
++   * Diffest has no answer for the file.
++   */
++  readonly diffestOverlay?: IDiffestTokens
++
+   /**
+    * Indicates whether the user is doing a text selection and in which
+    * column is doing it. This allows us to limit text selection to that
+@@ -249,6 +272,11 @@ export class SideBySideDiff extends React.Component<
+   private renderedStartIndex: number = 0
+   private renderedStopIndex: number | undefined = undefined
+ 
++  /** Stops the Diffest run still going when the file changes. */
++  private diffestAbortController: AbortController | null = null
++  private stopMoveHover: (() => void) | null = null
++  private diffAlgorithmSubscription: Disposable | null = null
++
+   private readonly hunkExpansionRefs = new Map<string, HTMLButtonElement>()
+ 
+   /**
+@@ -281,6 +309,11 @@ export class SideBySideDiff extends React.Component<
+ 
+   public componentDidMount() {
+     this.initDiffSyntaxMode()
++    this.initDiffestOverlay()
++
++    this.diffAlgorithmSubscription = diffAlgorithmStore.onDidChange(
++      this.initDiffestOverlay
++    )
+ 
+     window.addEventListener('keydown', this.onWindowKeyDown)
+ 
+@@ -428,6 +461,10 @@ export class SideBySideDiff extends React.Component<
+     )
+     document.removeEventListener('mousemove', this.onUpdateSelection)
+     this.removeContextMenuListenerFromDiff()
++
++    this.diffAlgorithmSubscription?.dispose()
++    // Or the worker this component started outlives the view that wanted it.
++    this.diffestAbortController?.abort()
+   }
+ 
+   public componentDidUpdate(
+@@ -441,6 +478,26 @@ export class SideBySideDiff extends React.Component<
+       this.clearListRowsHeightCache()
+     }
+ 
++    // Not gated on highlightParametersEqual. That compares state.diff.text,
++    // which changes each time a hunk is expanded, but Diffest's answer depends
++    // on the file contents alone — so each click of "expand 20 lines" would
++    // hash both files again for the same answer. SeamlessDiffSwitcher keeps the
++    // contents object while the same file stays selected, so its identity is
++    // the right question.
++    if (this.props.fileContents !== prevProps.fileContents) {
++      this.initDiffestOverlay()
++    }
++
++    // Hidden rows move every row after them, and both caches are keyed by row
++    // position.
++    if (this.state.diffestOverlay !== prevState.diffestOverlay) {
++      this.rowSelectableGroupStaticDataCache.clear()
++      this.clearListRowsHeightCache()
++      // The rows already rendered with the old heights, so an empty cache alone
++      // changes nothing until the list measures them again.
++      this.virtualListRef.current?.recomputeRowHeights()
++    }
++
+     if (!textDiffEquals(this.props.diff, prevProps.diff)) {
+       this.diffToRestore = null
+       this.setState({ diff: this.props.diff, lastExpandedHunk: null })
+@@ -575,15 +632,24 @@ export class SideBySideDiff extends React.Component<
+       ref.addEventListener('select-all', this.onSelectAll)
+     }
+     this.diffContainer = ref
++
++    this.stopMoveHover?.()
++    this.stopMoveHover = ref === null ? null : watchMoveHover(ref)
+   }
+ 
++  // Every lookup of a row by its index goes through here. Diffest can hide
++  // rows, so an index into the unfiltered rows points at a different row.
+   private getCurrentDiffRows() {
+-    const { diff } = this.state
++    return this.getDiffestRows().rows
++  }
+ 
+-    return getDiffRows(
+-      diff,
+-      this.props.showSideBySideDiff,
+-      this.canExpandDiff()
++  private getDiffestRows() {
++    const { diff, diffestOverlay } = this.state
++
++    return withDiffestRows(
++      getDiffRows(diff, this.props.showSideBySideDiff, this.canExpandDiff()),
++      diffestOverlay,
++      this.props.showSideBySideDiff
+     )
+   }
+ 
+@@ -600,11 +666,15 @@ export class SideBySideDiff extends React.Component<
+ 
+     const rows = this.getCurrentDiffRows()
+     const containerClassName = classNames('side-by-side-diff-container', {
++      // Gives the whole row to Diffest's marks. Only where Diffest answered:
++      // otherwise a file it cannot read would lose git's colours and show no
++      // marks at all.
++      'diffest-overlay': this.hasDiffestOverlay(),
+       'unified-diff': !this.props.showSideBySideDiff,
+       [`selecting-${this.state.selectingTextInRow}`]:
+         this.props.showSideBySideDiff &&
+         this.state.selectingTextInRow !== undefined,
+-      editable: canSelect(this.props.file),
++      editable: this.canSelectLines(),
+     })
+ 
+     return (
+@@ -655,10 +725,12 @@ export class SideBySideDiff extends React.Component<
+                 showSideBySideDiff={this.props.showSideBySideDiff}
+                 beforeTokens={this.state.beforeTokens}
+                 afterTokens={this.state.afterTokens}
++                beforeDiffestTokens={this.state.beforeDiffestTokens}
++                afterDiffestTokens={this.state.afterDiffestTokens}
+                 temporarySelection={this.state.temporarySelection}
+                 hoveredHunk={this.state.hoveredHunk}
+                 showDiffCheckMarks={this.props.showDiffCheckMarks}
+-                isSelectable={canSelect(this.props.file)}
++                isSelectable={this.canSelectLines()}
+                 fileSelection={this.getSelection()}
+                 // rows are memoized and include things like the
+                 // noNewlineIndicator
+@@ -700,11 +772,7 @@ export class SideBySideDiff extends React.Component<
+   ): IRowSelectableGroup | null {
+     const { diff, hoveredHunk } = this.state
+ 
+-    const rows = getDiffRows(
+-      diff,
+-      this.props.showSideBySideDiff,
+-      this.canExpandDiff()
+-    )
++    const rows = this.getCurrentDiffRows()
+     const row = rows[rowIndex]
+ 
+     if (row === undefined || !isRowChanged(row)) {
+@@ -864,11 +932,7 @@ export class SideBySideDiff extends React.Component<
+ 
+   private renderRow = ({ index, parent, style, key }: ListRowProps) => {
+     const { diff } = this.state
+-    const rows = getDiffRows(
+-      diff,
+-      this.props.showSideBySideDiff,
+-      this.canExpandDiff()
+-    )
++    const rows = this.getCurrentDiffRows()
+ 
+     const row = rows[index]
+     if (row === undefined) {
+@@ -912,7 +976,7 @@ export class SideBySideDiff extends React.Component<
+             row={rowWithTokens}
+             lineNumberWidth={lineNumberWidth}
+             numRow={index}
+-            isDiffSelectable={canSelect(this.props.file)}
++            isDiffSelectable={this.canSelectLines()}
+             rowSelectableGroup={rowSelectableGroupDetails}
+             showSideBySideDiff={this.props.showSideBySideDiff}
+             hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
+@@ -1025,8 +1089,71 @@ export class SideBySideDiff extends React.Component<
+     })
+   }
+ 
++  /**
++   * Asks Diffest what changed, when the user has asked for Diffest.
++   *
++   * Every way this can come back empty — the algorithm is set to Git, there is
++   * no parser for this file type, the file is too large, the view does not
++   * match the file — clears the marks and leaves the git diff to speak for
++   * itself.
++   */
++  private initDiffestOverlay = async () => {
++    // A file switch stops the run that was still going, so its worker is
++    // terminated rather than left to finish work nobody waits for.
++    this.diffestAbortController?.abort()
++
++    const { fileContents } = this.props
++
++    if (
++      fileContents === null ||
++      diffAlgorithmStore.value !== DiffAlgorithm.Diffest
++    ) {
++      this.setState({
++        beforeDiffestTokens: undefined,
++        afterDiffestTokens: undefined,
++        diffestOverlay: undefined,
++      })
++      return
++    }
++
++    const controller = new AbortController()
++    this.diffestAbortController = controller
++
++    const overlay = await getDiffestOverlay(fileContents, controller.signal)
++
++    // The file was replaced while the worker ran.
++    if (controller.signal.aborted) {
++      return
++    }
++
++    this.setState({
++      beforeDiffestTokens: overlay?.before,
++      afterDiffestTokens: overlay?.after,
++      diffestOverlay: overlay ?? undefined,
++    })
++  }
++
++  private hasDiffestOverlay(): boolean {
++    return (
++      this.state.beforeDiffestTokens !== undefined ||
++      this.state.afterDiffestTokens !== undefined
++    )
++  }
++
++  /**
++   * Whether single lines and hunks can be selected or discarded. Not while
++   * Diffest paints the file: it hides some of git's deleted rows, and taking
++   * one line of a pair without its hidden other half would commit or discard a
++   * change nobody can see.
++   */
++  private canSelectLines(): boolean {
++    return canSelect(this.props.file) && !this.hasDiffestOverlay()
++  }
++
+   private getSelection(): DiffSelection | undefined {
+-    return canSelect(this.props.file) ? this.props.file.selection : undefined
++    return canSelect(this.props.file) && !this.hasDiffestOverlay()
++      ? this.props.file.selection
++      : undefined
+   }
+ 
+   private createFullRow(row: SimplifiedDiffRow, numRow: number): DiffRow {
+@@ -1037,7 +1164,8 @@ export class SideBySideDiff extends React.Component<
+           row.data,
+           numRow,
+           DiffColumn.After,
+-          this.state.afterTokens
++          this.state.afterTokens,
++          this.state.afterDiffestTokens
+         ),
+       }
+     }
+@@ -1049,7 +1177,8 @@ export class SideBySideDiff extends React.Component<
+           row.data,
+           numRow,
+           DiffColumn.Before,
+-          this.state.beforeTokens
++          this.state.beforeTokens,
++          this.state.beforeDiffestTokens
+         ),
+       }
+     }
+@@ -1061,13 +1190,15 @@ export class SideBySideDiff extends React.Component<
+           row.beforeData,
+           numRow,
+           DiffColumn.Before,
+-          this.state.beforeTokens
++          this.state.beforeTokens,
++          this.state.beforeDiffestTokens
+         ),
+         afterData: this.getRowDataPopulated(
+           row.afterData,
+           numRow,
+           DiffColumn.After,
+-          this.state.afterTokens
++          this.state.afterTokens,
++          this.state.afterDiffestTokens
+         ),
+       }
+     }
+@@ -1095,6 +1226,26 @@ export class SideBySideDiff extends React.Component<
+         afterSearchTokens.forEach(x => afterTokens.push(x))
+       }
+ 
++      // Each side on its own, unlike the syntax tokens above. Those fall back
++      // to the other side because only one of the two may have been
++      // highlighted. Diffest always marks both, and a context line can carry a
++      // mark on one side only: each end of a move is marked on its own side.
++      const beforeDiffestTokens = getTokens(
++        row.beforeLineNumber,
++        this.state.beforeDiffestTokens
++      )
++      if (beforeDiffestTokens !== null) {
++        beforeTokens.push(beforeDiffestTokens)
++      }
++
++      const afterDiffestTokens = getTokens(
++        row.afterLineNumber,
++        this.state.afterDiffestTokens
++      )
++      if (afterDiffestTokens !== null) {
++        afterTokens.push(afterDiffestTokens)
++      }
++
+       return { ...row, beforeTokens, afterTokens }
+     }
+ 
+@@ -1105,11 +1256,23 @@ export class SideBySideDiff extends React.Component<
+     data: SimplifiedDiffRowData,
+     row: number,
+     column: DiffColumn,
+-    tokens: ITokens | undefined
++    tokens: ITokens | undefined,
++    diffestTokens?: ITokens
+   ): IDiffRowData {
+     const searchTokens = this.getSearchTokens(row, column)
+     const lineTokens = getTokens(data.lineNumber, tokens)
+-    const finalTokens = [...data.tokens]
++    const diffestLineTokens = getTokens(data.lineNumber, diffestTokens)
++
++    // At this point data.tokens holds exactly the intra-line diff — the
++    // prefix/suffix trim of the two versions of this line. Where Diffest marks
++    // the same line, that guess is dropped rather than layered underneath: both
++    // paint backgrounds over the same characters, and the one that read the
++    // code should win.
++    //
++    // Per line, not per file. A file Diffest read can still have lines it
++    // marks nothing on — a line a formatter only moved, say — and those keep
++    // the old highlight rather than losing every mark they have today.
++    const finalTokens = diffestLineTokens !== null ? [] : [...data.tokens]
+ 
+     if (searchTokens !== undefined) {
+       searchTokens.forEach(x => finalTokens.push(x))
+@@ -1117,10 +1280,26 @@ export class SideBySideDiff extends React.Component<
+     if (lineTokens !== null) {
+       finalTokens.push(lineTokens)
+     }
++    // After the search tokens, so a hit still reads as one.
++    if (diffestLineTokens !== null) {
++      finalTokens.push(diffestLineTokens)
++    }
++
++    // The text Diffest reports as removed from this line: from its hidden old
++    // row, or by an edit on the way here when the line moved or was carried.
++    const inline =
++      column === DiffColumn.After
++        ? this.getDiffestRows().inline.get(data.lineNumber - 1)
++        : undefined
++    const { content, tokens: rowTokens } =
++      inline === undefined
++        ? { content: data.content, tokens: finalTokens }
++        : withInlineDeletions(data.content, finalTokens, inline)
+ 
+     return {
+       ...data,
+-      tokens: finalTokens,
++      content,
++      tokens: rowTokens,
+       isSelected:
+         data.diffLineNumber !== null &&
+         isInSelection(
+@@ -1165,12 +1344,7 @@ export class SideBySideDiff extends React.Component<
+     rowNumber: number,
+     column: DiffColumn
+   ): number | null {
+-    const { diff } = this.state
+-    const rows = getDiffRows(
+-      diff,
+-      this.props.showSideBySideDiff,
+-      this.canExpandDiff()
+-    )
++    const rows = this.getCurrentDiffRows()
+     const row = rows[rowNumber]
+ 
+     if (row === undefined) {
+@@ -1458,7 +1632,7 @@ export class SideBySideDiff extends React.Component<
+       return
+     }
+ 
+-    if (hideWhitespaceInDiff) {
++    if (hideWhitespaceInDiff || this.hasDiffestOverlay()) {
+       return
+     }
+ 
+@@ -1541,7 +1715,7 @@ export class SideBySideDiff extends React.Component<
+    * @param hunkStartLine The start line of the hunk where the user clicked.
+    */
+   private onContextMenuHunk = (hunkStartLine: number) => {
+-    if (!canSelect(this.props.file)) {
++    if (!this.canSelectLines()) {
+       return
+     }
+ 
+@@ -1648,10 +1822,9 @@ export class SideBySideDiff extends React.Component<
+ 
+   private startSearch = (searchQuery: string, direction: SearchDirection) => {
+     const searchResults = calcSearchTokens(
+-      this.state.diff,
++      this.getCurrentDiffRows(),
+       this.props.showSideBySideDiff,
+-      searchQuery,
+-      this.canExpandDiff()
++      searchQuery
+     )
+ 
+     if (searchResults === undefined || searchResults.length === 0) {
+@@ -2062,10 +2235,9 @@ class SearchResults {
+ }
+ 
+ function calcSearchTokens(
+-  diff: ITextDiff,
++  rows: ReadonlyArray<SimplifiedDiffRow>,
+   showSideBySideDiffs: boolean,
+-  searchQuery: string,
+-  enableDiffExpansion: boolean
++  searchQuery: string
+ ): SearchResults | undefined {
+   if (searchQuery.length === 0) {
+     return undefined
+@@ -2073,7 +2245,6 @@ function calcSearchTokens(
+ 
+   const hits = new SearchResults()
+   const searchRe = new RegExp(escapeRegExp(searchQuery), 'gi')
+-  const rows = getDiffRows(diff, showSideBySideDiffs, enableDiffExpansion)
+ 
+   for (const [rowNumber, row] of rows.entries()) {
+     if (row.type === DiffRowType.Hunk) {
 diff --git a/app/styles/ui/_diffest-diff.scss b/app/styles/ui/_diffest-diff.scss
 new file mode 100644
 index 0000000000..9b6c2b45ab
@@ -1521,10 +1929,10 @@ index 0000000000..9b6c2b45ab
 +}
 diff --git a/app/test/unit/diffest-rows-test.ts b/app/test/unit/diffest-rows-test.ts
 new file mode 100644
-index 0000000000..a89b1e1c50
+index 0000000000..5fda496cbb
 --- /dev/null
 +++ b/app/test/unit/diffest-rows-test.ts
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,277 @@
 +import { describe, it } from 'node:test'
 +import assert from 'node:assert'
 +import diff from 'diffest'
@@ -1592,6 +2000,7 @@ index 0000000000..a89b1e1c50
 +    unmarkedBeforeLines,
 +    keptBeforeLines: [],
 +    inlineDeletions: [],
++    landedDeletions: [],
 +    beforeLineRows,
 +    afterLineRows,
 +  }
@@ -1765,6 +2174,23 @@ index 0000000000..a89b1e1c50
 +  })
 +})
 +
++describe('withDiffestRows landed deletions', () => {
++  const removed = { afterLine: 1, column: 12, text: 'owner' }
++  const landed = { ...overlay([0, 1], [0, 1]), landedDeletions: [removed] }
++
++  it('puts the text an edit took out of a moved line into its new row in Unified', () => {
++    const { inline } = withDiffestRows([added(2)], landed, false)
++
++    assert.deepStrictEqual(inline.get(1), [removed])
++  })
++
++  it('puts it into the new row in Split as well', () => {
++    const { inline } = withDiffestRows([added(2)], landed, true)
++
++    assert.deepStrictEqual(inline.get(1), [removed])
++  })
++})
++
 +describe('tokensFromView line rows', () => {
 +  function line(...segments: Segment[]): DiffLine {
 +    return { segments }
@@ -1786,10 +2212,10 @@ index 0000000000..a89b1e1c50
 +})
 diff --git a/app/test/unit/diffest-tokens-test.ts b/app/test/unit/diffest-tokens-test.ts
 new file mode 100644
-index 0000000000..cde7c559a4
+index 0000000000..4604cd1d33
 --- /dev/null
 +++ b/app/test/unit/diffest-tokens-test.ts
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,336 @@
 +import { describe, it } from 'node:test'
 +import assert from 'node:assert'
 +import diff from 'diffest'
@@ -2038,6 +2464,46 @@ index 0000000000..cde7c559a4
 +    ])
 +  })
 +
++  // The line the move left is painted as the line, not as what the edit took
++  // out, so the old name goes into the line that landed.
++  it('puts the text an edit took out of a moved line into the line it landed on', () => {
++    const view: DiffView = [
++      {
++        segments: [same('notify(form.'), changed('owner', 'author'), same(')')],
++        move: { end: 'to' },
++      },
++      line(same('save()')),
++      { segments: [same('notify(form.owner)')], move: { end: 'from' } },
++    ]
++
++    const tokens = tokensFromView(
++      view,
++      'save()\nnotify(form.owner)',
++      'notify(form.author)\nsave()'
++    )
++
++    assert.deepStrictEqual(tokens?.inlineDeletions, [])
++    assert.deepStrictEqual(tokens?.landedDeletions, [
++      { afterLine: 0, column: 12, text: 'owner' },
++    ])
++  })
++
++  it('puts the old text of a carried change where the change landed', () => {
++    const view: DiffView = [
++      line(same('x '), changed('p', 'q', true), {
++        kind: 'deleted',
++        text: ' p',
++        quiet: true,
++      }),
++    ]
++
++    const tokens = tokensFromView(view, 'x  p', 'x q')
++
++    assert.deepStrictEqual(tokens?.landedDeletions, [
++      { afterLine: 0, column: 2, text: 'p' },
++    ])
++  })
++
 +  // A deleted line has a row of its own, so its text goes nowhere else.
 +  it('does not keep a line Diffest reports as deleted', () => {
 +    const view: DiffView = [
@@ -2062,7 +2528,7 @@ index 0000000000..cde7c559a4
 +          9: { length: 4, token: 'fn' },
 +        },
 +      ],
-+      [{ beforeLine: 0, afterLine: 0, column: 0, text: 'order' }]
++      [{ afterLine: 0, column: 0, text: 'order' }]
 +    )
 +
 +    assert.strictEqual(content, 'orderunsorted.push(item.cwd);')
@@ -2076,7 +2542,7 @@ index 0000000000..cde7c559a4
 +    const { content, tokens } = withInlineDeletions(
 +      'abcdef',
 +      [{ 0: { length: 6, token: 'string' } }],
-+      [{ beforeLine: 0, afterLine: 0, column: 3, text: 'XY' }]
++      [{ afterLine: 0, column: 3, text: 'XY' }]
 +    )
 +
 +    assert.strictEqual(content, 'abcXYdef')

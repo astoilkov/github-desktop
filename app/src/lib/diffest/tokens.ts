@@ -26,6 +26,14 @@ export interface IDiffestTokens {
   readonly inlineDeletions: ReadonlyArray<IInlineDeletion>
 
   /**
+   * Text an edit took out of a line that moved or was carried. The old version
+   * holds it on the line the move left, which is painted as the line and not
+   * as what the edit took out. So it goes into the new line, whatever git
+   * shows for the old one.
+   */
+  readonly landedDeletions: ReadonlyArray<IRemovedText>
+
+  /**
    * The row of Diffest's view each old line starts on, by line counted from 0.
    * `null` for a line with no text, which has no place of its own in the view.
    */
@@ -40,10 +48,13 @@ export interface IDiffestTokens {
  * the new line, just before what replaced it: `{~order~unsorted~}.push(x)`
  * reads as `order`, then `unsorted`, then `.push(x)` once.
  */
-export interface IInlineDeletion {
+export interface IInlineDeletion extends IRemovedText {
   /** The old line the text came from, counted from 0. */
   readonly beforeLine: number
+}
 
+/** Removed text, and the place in the new version it goes into. */
+export interface IRemovedText {
   /** The new line it goes into, counted from 0. */
   readonly afterLine: number
 
@@ -71,6 +82,12 @@ interface IPiece {
 
   /** On the new side: removed text that goes in here. It holds no file text. */
   readonly inline?: string
+
+  /**
+   * On the new side: text an edit took out of a line that moved or was
+   * carried. Like `inline`, but with no anchor on the old side to pair with.
+   */
+  readonly landed?: string
 }
 
 /** One side of the view, placed on the file. */
@@ -86,6 +103,9 @@ interface IPlacement {
 
   /** Where each anchor or inline piece landed, in the order they came. */
   readonly anchors: ReadonlyArray<number>
+
+  /** Where each landed piece goes, in the order they came. */
+  readonly landings: ReadonlyArray<number>
 }
 
 /**
@@ -125,6 +145,9 @@ export function tokensFromView(
   const removed = afterPieces.flatMap(piece =>
     piece.inline === undefined ? [] : [piece.inline]
   )
+  const landed = afterPieces.flatMap(piece =>
+    piece.landed === undefined ? [] : [piece.landed]
+  )
 
   return {
     before: getTokens(before, old.paints),
@@ -137,6 +160,10 @@ export function tokensFromView(
       const { line, column } = locate(after, now.anchors[index])
       const beforeLine = locate(before, old.anchors[index]).line
       return { beforeLine, afterLine: line, column, text }
+    }),
+    landedDeletions: landed.map((text, index) => {
+      const { line, column } = locate(after, now.landings[index])
+      return { afterLine: line, column, text }
     }),
   }
 }
@@ -230,15 +257,23 @@ function getSegmentPieces(
           : [{ text: segment.before, paint, kept, row, anchor: both }]
       }
       const changed = { text: segment.after, paint: 'df-changed', kept, row }
-      return both && !segment.carried
-        ? [getInlinePiece(segment.before, row), changed]
-        : [changed]
+      if (both && !segment.carried) {
+        return [getInlinePiece(segment.before, row), changed]
+      }
+      // The old text of a change the line or the text carried here sits on
+      // another line, where nothing paints it as removed. It goes in here, or
+      // no row shows what the change took out.
+      return [getLandedPiece(segment.before, row), changed]
     }
   }
 }
 
 function getInlinePiece(text: string, row: number): IPiece {
   return { text: '', paint: null, kept: true, row, inline: text }
+}
+
+function getLandedPiece(text: string, row: number): IPiece {
+  return { text: '', paint: null, kept: false, row, landed: text }
 }
 
 /** The pieces of one side, placed on the file. */
@@ -250,6 +285,7 @@ function placePieces(
   const kept = new Array<boolean | undefined>(file.length)
   const rows = new Array<number | undefined>(file.length)
   const anchors = new Array<number>()
+  const landings = new Array<number>()
   let at = 0
   // Whitespace the view passed since the last character it matched. Removed
   // text goes in after as much of the file's whitespace, so `x = 2` becoming
@@ -257,12 +293,16 @@ function placePieces(
   let spaces = 0
 
   for (const piece of pieces) {
-    if (piece.inline !== undefined) {
+    if (piece.inline !== undefined || piece.landed !== undefined) {
       let insertAt = at
       for (let left = spaces; left > 0 && isSpace(file[insertAt]); left--) {
         insertAt++
       }
-      anchors.push(insertAt)
+      if (piece.inline !== undefined) {
+        anchors.push(insertAt)
+      } else {
+        landings.push(insertAt)
+      }
       continue
     }
 
@@ -317,7 +357,7 @@ function placePieces(
     at++
   }
 
-  return at === file.length ? { paints, kept, rows, anchors } : null
+  return at === file.length ? { paints, kept, rows, anchors, landings } : null
 }
 
 /** Runs of one class on one line, keyed by line and by the column they start at. */

@@ -1285,7 +1285,8 @@ export class SideBySideDiff extends React.Component<
       finalTokens.push(diffestLineTokens)
     }
 
-    // The text Diffest reports as removed from this line's hidden old row.
+    // The text Diffest reports as removed from this line: from its hidden old
+    // row, or by an edit on the way here when the line moved or was carried.
     const inline =
       column === DiffColumn.After
         ? this.getDiffestRows().inline.get(data.lineNumber - 1)

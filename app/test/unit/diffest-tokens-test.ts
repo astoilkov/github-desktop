@@ -246,6 +246,46 @@ describe('tokensFromView', () => {
     ])
   })
 
+  // The line the move left is painted as the line, not as what the edit took
+  // out, so the old name goes into the line that landed.
+  it('puts the text an edit took out of a moved line into the line it landed on', () => {
+    const view: DiffView = [
+      {
+        segments: [same('notify(form.'), changed('owner', 'author'), same(')')],
+        move: { end: 'to' },
+      },
+      line(same('save()')),
+      { segments: [same('notify(form.owner)')], move: { end: 'from' } },
+    ]
+
+    const tokens = tokensFromView(
+      view,
+      'save()\nnotify(form.owner)',
+      'notify(form.author)\nsave()'
+    )
+
+    assert.deepStrictEqual(tokens?.inlineDeletions, [])
+    assert.deepStrictEqual(tokens?.landedDeletions, [
+      { afterLine: 0, column: 12, text: 'owner' },
+    ])
+  })
+
+  it('puts the old text of a carried change where the change landed', () => {
+    const view: DiffView = [
+      line(same('x '), changed('p', 'q', true), {
+        kind: 'deleted',
+        text: ' p',
+        quiet: true,
+      }),
+    ]
+
+    const tokens = tokensFromView(view, 'x  p', 'x q')
+
+    assert.deepStrictEqual(tokens?.landedDeletions, [
+      { afterLine: 0, column: 2, text: 'p' },
+    ])
+  })
+
   // A deleted line has a row of its own, so its text goes nowhere else.
   it('does not keep a line Diffest reports as deleted', () => {
     const view: DiffView = [
@@ -270,7 +310,7 @@ describe('withInlineDeletions', () => {
           9: { length: 4, token: 'fn' },
         },
       ],
-      [{ beforeLine: 0, afterLine: 0, column: 0, text: 'order' }]
+      [{ afterLine: 0, column: 0, text: 'order' }]
     )
 
     assert.strictEqual(content, 'orderunsorted.push(item.cwd);')
@@ -284,7 +324,7 @@ describe('withInlineDeletions', () => {
     const { content, tokens } = withInlineDeletions(
       'abcdef',
       [{ 0: { length: 6, token: 'string' } }],
-      [{ beforeLine: 0, afterLine: 0, column: 3, text: 'XY' }]
+      [{ afterLine: 0, column: 3, text: 'XY' }]
     )
 
     assert.strictEqual(content, 'abcXYdef')

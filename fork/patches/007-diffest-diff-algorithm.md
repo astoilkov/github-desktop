@@ -84,6 +84,7 @@ New files, which hold most of the code and cannot conflict:
 - `app/styles/ui/_diffest-diff.scss` — the mark colours and their theme
   variables.
 - `app/test/unit/diffest-tokens-test.ts`.
+- `app/test/unit/diffest-rows-test.ts`.
 
 ## Change summary
 
@@ -173,7 +174,16 @@ New files, which hold most of the code and cannot conflict:
   `inline.ts` puts it into the new row and moves every token after it. If any
   removed piece of the line would land on a row git does not show as added,
   the old row stays and nothing goes in, so no text is lost or shown twice.
-  Blank lines keep git's rows. 
+  Blank lines keep git's rows.
+
+  **Edits to moved lines.** When a line moved, or a change was carried to
+  another line, and an edit also changed it, the old text sits on the line the
+  move left. That row is painted as the line, not as what the edit took out, so
+  no row showed the old text. `tokensFromView` now returns `landedDeletions`:
+  the removed text with the new line and column it goes in front of, but with no
+  old line. `IInlineDeletion` extends the new `IRemovedText`, which is what
+  `inline.ts` takes. `withDiffestRows` puts landed text into the new row in
+  both Unified and Split. Before, Split put no removed text in.
 
   **Diffest's order.** Inside a hunk the rows follow Diffest's view, not git.
   Git lists every old line of a change before every new one. Diffest puts a
@@ -244,6 +254,10 @@ New files, which hold most of the code and cannot conflict:
     The file checkbox still commits the whole file. Press ⇧⌘\\: git's deleted
     row and the checkboxes come back.
 11. `yarn build:prod` passes `legal-eagle`.
+12. With Diffest on, move `notify(form.owner)` below `save()` and rename
+    `owner` to `author`. In Unified and in Split, the row the line landed on
+    shows `notify(form.ownerauthor)`, with `owner` red and `author` yellow.
+    `yarn test:unit app/test/unit/diffest-rows-test.ts` passes.
 
 ## Caveats
 
