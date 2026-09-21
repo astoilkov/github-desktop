@@ -155,9 +155,11 @@ New files, which hold most of the code and cannot conflict:
   `IFileContents` object while the same file stays selected. One
   `AbortController` per instance, aborted on each new run and on unmount.
 
-  In `getRowDataPopulated`, where Diffest marks a line, git's prefix/suffix
-  guess for that line is dropped rather than layered under it. This is **per
-  line**: a line Diffest does not mark keeps today's highlight. Diffest's layer
+  In `getRowDataPopulated`, git's prefix/suffix guess is dropped on **every
+  line** of a file Diffest read (`hasDiffestOverlay`), not only on the lines
+  Diffest marks. A line Diffest keeps with no mark, such as a line a formatter
+  only indented, has nothing to report, and git's trim would still paint it
+  and cut through words to do so. Diffest's layer
   goes after the search tokens, so a search hit still reads as one. In
   `createFullRow`'s context branch, each side is pushed on its own, without the
   `??` fallback the syntax tokens use, because each end of a move is marked on
@@ -258,6 +260,9 @@ New files, which hold most of the code and cannot conflict:
     `owner` to `author`. In Unified and in Split, the row the line landed on
     shows `notify(form.ownerauthor)`, with `owner` red and `author` yellow.
     `yarn test:unit app/test/unit/diffest-rows-test.ts` passes.
+13. With Diffest on, re-indent one line and change a value on another line in
+    the same file. The re-indented line has no highlight inside it. Press
+    ⇧⌘\\: git's prefix/suffix highlight comes back on that line.
 
 ## Caveats
 

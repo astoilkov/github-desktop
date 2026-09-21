@@ -1264,15 +1264,12 @@ export class SideBySideDiff extends React.Component<
     const diffestLineTokens = getTokens(data.lineNumber, diffestTokens)
 
     // At this point data.tokens holds exactly the intra-line diff — the
-    // prefix/suffix trim of the two versions of this line. Where Diffest marks
-    // the same line, that guess is dropped rather than layered underneath: both
-    // paint backgrounds over the same characters, and the one that read the
-    // code should win.
-    //
-    // Per line, not per file. A file Diffest read can still have lines it
-    // marks nothing on — a line a formatter only moved, say — and those keep
-    // the old highlight rather than losing every mark they have today.
-    const finalTokens = diffestLineTokens !== null ? [] : [...data.tokens]
+    // prefix/suffix trim of the two versions of this line. Where Diffest read
+    // the file, that guess is dropped on every line, not only on the lines
+    // Diffest marks. A line Diffest keeps with no mark, such as a line a
+    // formatter only indented, has nothing to report. Git's trim would still
+    // paint it, and cut through words to do so.
+    const finalTokens = this.hasDiffestOverlay() ? [] : [...data.tokens]
 
     if (searchTokens !== undefined) {
       searchTokens.forEach(x => finalTokens.push(x))

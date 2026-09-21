@@ -1365,7 +1365,7 @@ index 0000000000..d91d36b7a3
 +  return lineRows[lineNumber - 1] ?? undefined
 +}
 diff --git a/app/src/ui/diff/side-by-side-diff.tsx b/app/src/ui/diff/side-by-side-diff.tsx
-index 798e738d12..685a03b098 100644
+index 798e738d12..b958bef98c 100644
 --- a/app/src/ui/diff/side-by-side-diff.tsx
 +++ b/app/src/ui/diff/side-by-side-diff.tsx
 @@ -15,6 +15,13 @@ import {
@@ -1701,7 +1701,7 @@ index 798e738d12..685a03b098 100644
        return { ...row, beforeTokens, afterTokens }
      }
  
-@@ -1105,11 +1256,23 @@ export class SideBySideDiff extends React.Component<
+@@ -1105,11 +1256,20 @@ export class SideBySideDiff extends React.Component<
      data: SimplifiedDiffRowData,
      row: number,
      column: DiffColumn,
@@ -1715,19 +1715,16 @@ index 798e738d12..685a03b098 100644
 +    const diffestLineTokens = getTokens(data.lineNumber, diffestTokens)
 +
 +    // At this point data.tokens holds exactly the intra-line diff — the
-+    // prefix/suffix trim of the two versions of this line. Where Diffest marks
-+    // the same line, that guess is dropped rather than layered underneath: both
-+    // paint backgrounds over the same characters, and the one that read the
-+    // code should win.
-+    //
-+    // Per line, not per file. A file Diffest read can still have lines it
-+    // marks nothing on — a line a formatter only moved, say — and those keep
-+    // the old highlight rather than losing every mark they have today.
-+    const finalTokens = diffestLineTokens !== null ? [] : [...data.tokens]
++    // prefix/suffix trim of the two versions of this line. Where Diffest read
++    // the file, that guess is dropped on every line, not only on the lines
++    // Diffest marks. A line Diffest keeps with no mark, such as a line a
++    // formatter only indented, has nothing to report. Git's trim would still
++    // paint it, and cut through words to do so.
++    const finalTokens = this.hasDiffestOverlay() ? [] : [...data.tokens]
  
      if (searchTokens !== undefined) {
        searchTokens.forEach(x => finalTokens.push(x))
-@@ -1117,10 +1280,26 @@ export class SideBySideDiff extends React.Component<
+@@ -1117,10 +1277,26 @@ export class SideBySideDiff extends React.Component<
      if (lineTokens !== null) {
        finalTokens.push(lineTokens)
      }
@@ -1755,7 +1752,7 @@ index 798e738d12..685a03b098 100644
        isSelected:
          data.diffLineNumber !== null &&
          isInSelection(
-@@ -1165,12 +1344,7 @@ export class SideBySideDiff extends React.Component<
+@@ -1165,12 +1341,7 @@ export class SideBySideDiff extends React.Component<
      rowNumber: number,
      column: DiffColumn
    ): number | null {
@@ -1769,7 +1766,7 @@ index 798e738d12..685a03b098 100644
      const row = rows[rowNumber]
  
      if (row === undefined) {
-@@ -1458,7 +1632,7 @@ export class SideBySideDiff extends React.Component<
+@@ -1458,7 +1629,7 @@ export class SideBySideDiff extends React.Component<
        return
      }
  
@@ -1778,7 +1775,7 @@ index 798e738d12..685a03b098 100644
        return
      }
  
-@@ -1541,7 +1715,7 @@ export class SideBySideDiff extends React.Component<
+@@ -1541,7 +1712,7 @@ export class SideBySideDiff extends React.Component<
     * @param hunkStartLine The start line of the hunk where the user clicked.
     */
    private onContextMenuHunk = (hunkStartLine: number) => {
@@ -1787,7 +1784,7 @@ index 798e738d12..685a03b098 100644
        return
      }
  
-@@ -1648,10 +1822,9 @@ export class SideBySideDiff extends React.Component<
+@@ -1648,10 +1819,9 @@ export class SideBySideDiff extends React.Component<
  
    private startSearch = (searchQuery: string, direction: SearchDirection) => {
      const searchResults = calcSearchTokens(
@@ -1800,7 +1797,7 @@ index 798e738d12..685a03b098 100644
      )
  
      if (searchResults === undefined || searchResults.length === 0) {
-@@ -2062,10 +2235,9 @@ class SearchResults {
+@@ -2062,10 +2232,9 @@ class SearchResults {
  }
  
  function calcSearchTokens(
@@ -1813,7 +1810,7 @@ index 798e738d12..685a03b098 100644
  ): SearchResults | undefined {
    if (searchQuery.length === 0) {
      return undefined
-@@ -2073,7 +2245,6 @@ function calcSearchTokens(
+@@ -2073,7 +2242,6 @@ function calcSearchTokens(
  
    const hits = new SearchResults()
    const searchRe = new RegExp(escapeRegExp(searchQuery), 'gi')
