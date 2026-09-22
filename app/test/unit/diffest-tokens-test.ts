@@ -14,8 +14,8 @@ function same(text: string): Segment {
   return { kind: 'same', text }
 }
 
-function changed(before: string, after: string, carried = false): Segment {
-  return { kind: 'changed', before, after, carried }
+function changed(before: string, after: string, moved = false): Segment {
+  return { kind: 'changed', before, after, moved }
 }
 
 /** The class painted on a character of the file, if any. */
@@ -104,7 +104,7 @@ describe('tokensFromView', () => {
     assert.deepStrictEqual(marks(tokens), { before: {}, after: {} })
   })
 
-  it('paints a carried change only where it landed', () => {
+  it('paints a moved change only where it landed', () => {
     const view: DiffView = [
       line(same('x '), changed('p', 'q', true), {
         kind: 'deleted',
@@ -270,7 +270,7 @@ describe('tokensFromView', () => {
     ])
   })
 
-  it('puts the old text of a carried change where the change landed', () => {
+  it('puts the old text of a moved change where the change landed', () => {
     const view: DiffView = [
       line(same('x '), changed('p', 'q', true), {
         kind: 'deleted',

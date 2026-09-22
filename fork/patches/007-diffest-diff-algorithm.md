@@ -178,9 +178,8 @@ New files, which hold most of the code and cannot conflict:
   the old row stays and nothing goes in, so no text is lost or shown twice.
   Blank lines keep git's rows.
 
-  **Edits to moved lines.** When a line moved, or a change was carried to
-  another line, and an edit also changed it, the old text sits on the line the
-  move left. That row is painted as the line, not as what the edit took out, so
+  **Edits to moved lines.** When a line or a change moved to another line, and
+  an edit also changed it, the old text sits on the line the move left. That row is painted as the line, not as what the edit took out, so
   no row showed the old text. `tokensFromView` now returns `landedDeletions`:
   the removed text with the new line and column it goes in front of, but with no
   old line. `IInlineDeletion` extends the new `IRemovedText`, which is what

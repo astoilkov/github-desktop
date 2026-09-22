@@ -36,7 +36,7 @@ interface IPlacedRow {
  * it. In Split, an old line and a new line sit side by side when Diffest puts
  * them on one view line, not when git lists them at the same position.
  *
- * In both, the text an edit took out of a line that moved or was carried goes
+ * In both, the text an edit took out of a line or a change that moved goes
  * into the new row. The row the line left shows the line and not the edit.
  */
 export const withDiffestRows = memoize(function (

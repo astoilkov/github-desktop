@@ -26,7 +26,7 @@ export interface IDiffestTokens {
   readonly inlineDeletions: ReadonlyArray<IInlineDeletion>
 
   /**
-   * Text an edit took out of a line that moved or was carried. The old version
+   * Text an edit took out of a line or a change that moved. The old version
    * holds it on the line the move left, which is painted as the line and not
    * as what the edit took out. So it goes into the new line, whatever git
    * shows for the old one.
@@ -84,8 +84,8 @@ interface IPiece {
   readonly inline?: string
 
   /**
-   * On the new side: text an edit took out of a line that moved or was
-   * carried. Like `inline`, but with no anchor on the old side to pair with.
+   * On the new side: text an edit took out of a line or a change that
+   * moved. Like `inline`, but with no anchor on the old side to pair with.
    */
   readonly landed?: string
 }
@@ -203,7 +203,7 @@ function getPieces(
     }
 
     const both = held === 'both'
-    // An old line the page gives no row, such as the seat a carried line
+    // An old line the page gives no row, such as the seat a quiet move
     // left, is kept as well.
     const kept = both || !drawn(line)
 
@@ -248,21 +248,21 @@ function getSegmentPieces(
       return [{ text: segment.text, paint, kept, row, anchor: inline }]
     }
     case 'changed': {
-      // A carried change is counted where it used to be, where the view
+      // A moved change is counted where it used to be, where the view
       // writes its old text as a quiet deletion.
       if (side === 'before') {
         const paint = 'df-deleted'
-        return segment.carried
+        return segment.moved
           ? []
           : [{ text: segment.before, paint, kept, row, anchor: both }]
       }
       const changed = { text: segment.after, paint: 'df-changed', kept, row }
-      if (both && !segment.carried) {
+      if (both && !segment.moved) {
         return [getInlinePiece(segment.before, row), changed]
       }
-      // The old text of a change the line or the text carried here sits on
-      // another line, where nothing paints it as removed. It goes in here, or
-      // no row shows what the change took out.
+      // The old text of a change that moved here, alone or with its line,
+      // sits on another line, where nothing paints it as removed. It goes in
+      // here, or no row shows what the change took out.
       return [getLandedPiece(segment.before, row), changed]
     }
   }

@@ -293,7 +293,7 @@ index 0000000000..790f3964ce
 +}
 diff --git a/app/src/lib/diffest/tokens.ts b/app/src/lib/diffest/tokens.ts
 new file mode 100644
-index 0000000000..18b7c656eb
+index 0000000000..f9e62be3e2
 --- /dev/null
 +++ b/app/src/lib/diffest/tokens.ts
 @@ -0,0 +1,515 @@
@@ -325,7 +325,7 @@ index 0000000000..18b7c656eb
 +  readonly inlineDeletions: ReadonlyArray<IInlineDeletion>
 +
 +  /**
-+   * Text an edit took out of a line that moved or was carried. The old version
++   * Text an edit took out of a line or a change that moved. The old version
 +   * holds it on the line the move left, which is painted as the line and not
 +   * as what the edit took out. So it goes into the new line, whatever git
 +   * shows for the old one.
@@ -383,8 +383,8 @@ index 0000000000..18b7c656eb
 +  readonly inline?: string
 +
 +  /**
-+   * On the new side: text an edit took out of a line that moved or was
-+   * carried. Like `inline`, but with no anchor on the old side to pair with.
++   * On the new side: text an edit took out of a line or a change that
++   * moved. Like `inline`, but with no anchor on the old side to pair with.
 +   */
 +  readonly landed?: string
 +}
@@ -502,7 +502,7 @@ index 0000000000..18b7c656eb
 +    }
 +
 +    const both = held === 'both'
-+    // An old line the page gives no row, such as the seat a carried line
++    // An old line the page gives no row, such as the seat a quiet move
 +    // left, is kept as well.
 +    const kept = both || !drawn(line)
 +
@@ -547,21 +547,21 @@ index 0000000000..18b7c656eb
 +      return [{ text: segment.text, paint, kept, row, anchor: inline }]
 +    }
 +    case 'changed': {
-+      // A carried change is counted where it used to be, where the view
++      // A moved change is counted where it used to be, where the view
 +      // writes its old text as a quiet deletion.
 +      if (side === 'before') {
 +        const paint = 'df-deleted'
-+        return segment.carried
++        return segment.moved
 +          ? []
 +          : [{ text: segment.before, paint, kept, row, anchor: both }]
 +      }
 +      const changed = { text: segment.after, paint: 'df-changed', kept, row }
-+      if (both && !segment.carried) {
++      if (both && !segment.moved) {
 +        return [getInlinePiece(segment.before, row), changed]
 +      }
-+      // The old text of a change the line or the text carried here sits on
-+      // another line, where nothing paints it as removed. It goes in here, or
-+      // no row shows what the change took out.
++      // The old text of a change that moved here, alone or with its line,
++      // sits on another line, where nothing paints it as removed. It goes in
++      // here, or no row shows what the change took out.
 +      return [getLandedPiece(segment.before, row), changed]
 +    }
 +  }
@@ -1012,7 +1012,7 @@ index 0000000000..2e9ebd3323
 +}
 diff --git a/app/src/ui/diff/diffest-rows.ts b/app/src/ui/diff/diffest-rows.ts
 new file mode 100644
-index 0000000000..d91d36b7a3
+index 0000000000..a9ddd0712e
 --- /dev/null
 +++ b/app/src/ui/diff/diffest-rows.ts
 @@ -0,0 +1,347 @@
@@ -1054,7 +1054,7 @@ index 0000000000..d91d36b7a3
 + * it. In Split, an old line and a new line sit side by side when Diffest puts
 + * them on one view line, not when git lists them at the same position.
 + *
-+ * In both, the text an edit took out of a line that moved or was carried goes
++ * In both, the text an edit took out of a line or a change that moved goes
 + * into the new row. The row the line left shows the line and not the edit.
 + */
 +export const withDiffestRows = memoize(function (
@@ -1925,10 +1925,10 @@ index 0000000000..9b6c2b45ab
 +}
 diff --git a/app/test/unit/diffest-rows-test.ts b/app/test/unit/diffest-rows-test.ts
 new file mode 100644
-index 0000000000..5fda496cbb
+index 0000000000..80fbe7b596
 --- /dev/null
 +++ b/app/test/unit/diffest-rows-test.ts
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,276 @@
 +import { describe, it } from 'node:test'
 +import assert from 'node:assert'
 +import diff from 'diffest'
@@ -2160,7 +2160,6 @@ index 0000000000..5fda496cbb
 +      '+7',
 +      '-3',
 +      '-4',
-+      '-5',
 +      '+8',
 +      '+9',
 +      '=10',
@@ -2208,7 +2207,7 @@ index 0000000000..5fda496cbb
 +})
 diff --git a/app/test/unit/diffest-tokens-test.ts b/app/test/unit/diffest-tokens-test.ts
 new file mode 100644
-index 0000000000..4604cd1d33
+index 0000000000..f23825fc6a
 --- /dev/null
 +++ b/app/test/unit/diffest-tokens-test.ts
 @@ -0,0 +1,336 @@
@@ -2228,8 +2227,8 @@ index 0000000000..4604cd1d33
 +  return { kind: 'same', text }
 +}
 +
-+function changed(before: string, after: string, carried = false): Segment {
-+  return { kind: 'changed', before, after, carried }
++function changed(before: string, after: string, moved = false): Segment {
++  return { kind: 'changed', before, after, moved }
 +}
 +
 +/** The class painted on a character of the file, if any. */
@@ -2318,7 +2317,7 @@ index 0000000000..4604cd1d33
 +    assert.deepStrictEqual(marks(tokens), { before: {}, after: {} })
 +  })
 +
-+  it('paints a carried change only where it landed', () => {
++  it('paints a moved change only where it landed', () => {
 +    const view: DiffView = [
 +      line(same('x '), changed('p', 'q', true), {
 +        kind: 'deleted',
@@ -2484,7 +2483,7 @@ index 0000000000..4604cd1d33
 +    ])
 +  })
 +
-+  it('puts the old text of a carried change where the change landed', () => {
++  it('puts the old text of a moved change where the change landed', () => {
 +    const view: DiffView = [
 +      line(same('x '), changed('p', 'q', true), {
 +        kind: 'deleted',
