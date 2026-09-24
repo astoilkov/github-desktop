@@ -29,7 +29,8 @@ body.theme-dark {
 //
 // So in Diffest's view the row background goes, and the marks are the only
 // colour. Scoped to `.diffest-overlay`, which the diff sets only when Diffest
-// returned marks for this file. Every other file keeps git's colours.
+// answered for this file, even with no marks. Every other file keeps git's
+// colours.
 .side-by-side-diff-container.diffest-overlay .row {
   .before,
   .after {

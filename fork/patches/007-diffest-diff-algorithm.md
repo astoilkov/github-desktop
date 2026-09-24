@@ -127,6 +127,11 @@ New files, which hold most of the code and cannot conflict:
   - `!canBeExpanded` (the new side was cut mid-line at 1MB);
   - more than **3,000 lines** on either side.
 
+  A view with no marks is still an answer, not `null`. It means the change
+  holds nothing a reader needs to see, such as classes a formatter sorted, so
+  the rows show no colour. If it gave `null`, git's colours would paint every
+  changed line.
+
   The line cap exists because Diffest's cost grows with the line count. On
   this repo's own history, 1,000 lines take up to 1 s, 2,000 take 1.5 s,
   3,000 take 2 s, and 4,400 take 4 to 6 s. The cap keeps a typical file under
@@ -221,8 +226,8 @@ New files, which hold most of the code and cannot conflict:
   hidden with `visibility: hidden`, not removed: it is what spaces the code
   away from the line numbers, as in git's view. A
   deleted line still has a number on the left only, and an added line on the
-  right only. `SideBySideDiff` sets `.diffest-overlay` only when Diffest
-  returned marks, so a file it cannot read keeps git's colours.
+  right only. `SideBySideDiff` sets `.diffest-overlay` when Diffest answered
+  for the file, even with no marks. A file it cannot read keeps git's colours.
 
 - **`desktop.scss`** — the import goes here, not in `_ui.scss`, which is a long
   list upstream appends to every release.
@@ -262,6 +267,9 @@ New files, which hold most of the code and cannot conflict:
 13. With Diffest on, re-indent one line and change a value on another line in
     the same file. The re-indented line has no highlight inside it. Press
     ⇧⌘\\: git's prefix/suffix highlight comes back on that line.
+14. With Diffest on, open a file where a formatter only sorted the classes in
+    a `class` attribute. The changed rows show no colour. Press ⇧⌘\\: git's
+    row colours come back.
 
 ## Caveats
 

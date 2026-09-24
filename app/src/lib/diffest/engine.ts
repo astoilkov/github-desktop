@@ -1,7 +1,6 @@
 import * as Path from 'path'
 import { createHash } from 'crypto'
 import QuickLRU from 'quick-lru'
-import { ITokens } from '../highlighter/types'
 import { IFileContents } from '../../ui/diff/syntax-highlighting'
 import { getOldPathOrDefault } from '../get-old-path'
 import { IDiffestTokens } from './tokens'
@@ -171,27 +170,15 @@ function toOverlay(
     return null
   }
 
+  // A view with no marks is still an answer: the change holds nothing a reader
+  // needs to see, such as classes a formatter sorted. The rows then show no
+  // colour, where git's colours would paint every changed line.
   const overlay = response.tokens
   if (overlay === null) {
     log.debug(`[diffest] the view does not match the text of ${path}`)
-    return null
-  }
-
-  // A view with no marks at all is treated as no answer. When there is no
-  // overlay, the view gives the file back to git's colours; an overlay that
-  // paints nothing would leave the diff with no marks.
-  if (isEmpty(overlay.before) && isEmpty(overlay.after)) {
-    return null
   }
 
   return overlay
-}
-
-function isEmpty(tokens: ITokens): boolean {
-  for (const _ in tokens) {
-    return false
-  }
-  return true
 }
 
 /**

@@ -1,13 +1,12 @@
 diff --git a/app/src/lib/diffest/engine.ts b/app/src/lib/diffest/engine.ts
 new file mode 100644
-index 0000000000..c3f52e0e0a
+index 0000000000..fb9728f0fe
 --- /dev/null
 +++ b/app/src/lib/diffest/engine.ts
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,195 @@
 +import * as Path from 'path'
 +import { createHash } from 'crypto'
 +import QuickLRU from 'quick-lru'
-+import { ITokens } from '../highlighter/types'
 +import { IFileContents } from '../../ui/diff/syntax-highlighting'
 +import { getOldPathOrDefault } from '../get-old-path'
 +import { IDiffestTokens } from './tokens'
@@ -177,27 +176,15 @@ index 0000000000..c3f52e0e0a
 +    return null
 +  }
 +
++  // A view with no marks is still an answer: the change holds nothing a reader
++  // needs to see, such as classes a formatter sorted. The rows then show no
++  // colour, where git's colours would paint every changed line.
 +  const overlay = response.tokens
 +  if (overlay === null) {
 +    log.debug(`[diffest] the view does not match the text of ${path}`)
-+    return null
-+  }
-+
-+  // A view with no marks at all is treated as no answer. When there is no
-+  // overlay, the view gives the file back to git's colours; an overlay that
-+  // paints nothing would leave the diff with no marks.
-+  if (isEmpty(overlay.before) && isEmpty(overlay.after)) {
-+    return null
 +  }
 +
 +  return overlay
-+}
-+
-+function isEmpty(tokens: ITokens): boolean {
-+  for (const _ in tokens) {
-+    return false
-+  }
-+  return true
 +}
 +
 +/**
@@ -1819,10 +1806,10 @@ index 798e738d12..b958bef98c 100644
      if (row.type === DiffRowType.Hunk) {
 diff --git a/app/styles/ui/_diffest-diff.scss b/app/styles/ui/_diffest-diff.scss
 new file mode 100644
-index 0000000000..9b6c2b45ab
+index 0000000000..b6f4a53175
 --- /dev/null
 +++ b/app/styles/ui/_diffest-diff.scss
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,101 @@
 +// What Diffest marked, painted on top of the lines git produced.
 +//
 +// Only backgrounds are set here. Syntax highlighting colours the text of these
@@ -1854,7 +1841,8 @@ index 0000000000..9b6c2b45ab
 +//
 +// So in Diffest's view the row background goes, and the marks are the only
 +// colour. Scoped to `.diffest-overlay`, which the diff sets only when Diffest
-+// returned marks for this file. Every other file keeps git's colours.
++// answered for this file, even with no marks. Every other file keeps git's
++// colours.
 +.side-by-side-diff-container.diffest-overlay .row {
 +  .before,
 +  .after {
