@@ -228,6 +228,10 @@ const editors: IDarwinExternalEditor[] = [
     name: 'Windsurf',
     bundleIdentifiers: ['com.exafunction.windsurf'],
   },
+  {
+    name: '1000x',
+    bundleIdentifiers: ['com.astoilkov.1000x'],
+  },
 ]
 
 async function findApplication(

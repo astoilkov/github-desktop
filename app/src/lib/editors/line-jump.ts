@@ -26,6 +26,10 @@ export function getEditorLineJumpURL(
   fullPath: string,
   lineNumber: number
 ): string | null {
+  if (editorName === '1000x') {
+    return getThousandXLineJumpURL(fullPath, lineNumber)
+  }
+
   const scheme = editorURLSchemes.get(editorName)
   if (scheme === undefined) {
     return null
@@ -37,4 +41,18 @@ export function getEditorLineJumpURL(
   const rootedPath = posixPath.startsWith('/') ? posixPath : `/${posixPath}`
 
   return `${scheme}://file${encodeURI(rootedPath)}:${lineNumber}:1`
+}
+
+/**
+ * 1000x opens the file in the workspace that contains it. The `#L<line>`
+ * fragment is the same one its code view uses for links to a line. The `url`
+ * parameter goes last because 1000x reads it as the rest of the query.
+ */
+function getThousandXLineJumpURL(fullPath: string, lineNumber: number) {
+  // `encodeURI` keeps `#` and `?`, which would cut the path short.
+  const filePath = fullPath.split('/').map(encodeURIComponent).join('/')
+  const fileURL = `file://${filePath}#L${lineNumber}`
+  return `thousandx://open-url?workspace=${encodeURIComponent(
+    fullPath
+  )}&url=${encodeURIComponent(fileURL)}`
 }

@@ -1,0 +1,48 @@
+diff --git a/app/src/lib/editors/darwin.ts b/app/src/lib/editors/darwin.ts
+index 332d6e561c..8f6a740d38 100644
+--- a/app/src/lib/editors/darwin.ts
++++ b/app/src/lib/editors/darwin.ts
+@@ -228,6 +228,10 @@ const editors: IDarwinExternalEditor[] = [
+     name: 'Windsurf',
+     bundleIdentifiers: ['com.exafunction.windsurf'],
+   },
++  {
++    name: '1000x',
++    bundleIdentifiers: ['com.astoilkov.1000x'],
++  },
+ ]
+ 
+ async function findApplication(
+diff --git a/app/src/lib/editors/line-jump.ts b/app/src/lib/editors/line-jump.ts
+index 6e56f2dd52..3dac54ba95 100644
+--- a/app/src/lib/editors/line-jump.ts
++++ b/app/src/lib/editors/line-jump.ts
+@@ -26,6 +26,10 @@ export function getEditorLineJumpURL(
+   fullPath: string,
+   lineNumber: number
+ ): string | null {
++  if (editorName === '1000x') {
++    return getThousandXLineJumpURL(fullPath, lineNumber)
++  }
++
+   const scheme = editorURLSchemes.get(editorName)
+   if (scheme === undefined) {
+     return null
+@@ -38,3 +42,17 @@ export function getEditorLineJumpURL(
+ 
+   return `${scheme}://file${encodeURI(rootedPath)}:${lineNumber}:1`
+ }
++
++/**
++ * 1000x opens the file in the workspace that contains it. The `#L<line>`
++ * fragment is the same one its code view uses for links to a line. The `url`
++ * parameter goes last because 1000x reads it as the rest of the query.
++ */
++function getThousandXLineJumpURL(fullPath: string, lineNumber: number) {
++  // `encodeURI` keeps `#` and `?`, which would cut the path short.
++  const filePath = fullPath.split('/').map(encodeURIComponent).join('/')
++  const fileURL = `file://${filePath}#L${lineNumber}`
++  return `thousandx://open-url?workspace=${encodeURIComponent(
++    fullPath
++  )}&url=${encodeURIComponent(fileURL)}`
++}
