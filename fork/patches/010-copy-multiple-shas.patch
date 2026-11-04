@@ -1,0 +1,28 @@
+diff --git a/app/src/ui/history/commit-list.tsx b/app/src/ui/history/commit-list.tsx
+index fda167dd9a..0e8fbaeded 100644
+--- a/app/src/ui/history/commit-list.tsx
++++ b/app/src/ui/history/commit-list.tsx
+@@ -964,9 +964,23 @@ export class CommitList extends React.Component<
+         action: () => this.props.onKeyboardReorder?.(this.selectedCommits),
+         enabled: this.canReorder(),
+       },
++      { type: 'separator' },
++      {
++        label: `Copy ${count} SHAs`,
++        action: () => clipboard.writeText(this.getSelectedSHAsInListOrder()),
++      },
+     ]
+   }
+ 
++  /**
++   * Gives the selected SHAs in the order of the list (newest first), not in
++   * the order that the user selected them.
++   */
++  private getSelectedSHAsInListOrder() {
++    const selectedSHAs = new Set(this.props.selectedSHAs)
++    return this.props.commitSHAs.filter(sha => selectedSHAs.has(sha)).join(' ')
++  }
++
+   private onKeyboardInsertionIndexPathChanged = (indexPath: RowIndexPath) => {
+     this.updateKeyboardReorderingMessage(indexPath)
+   }

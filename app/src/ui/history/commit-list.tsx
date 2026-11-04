@@ -964,7 +964,21 @@ export class CommitList extends React.Component<
         action: () => this.props.onKeyboardReorder?.(this.selectedCommits),
         enabled: this.canReorder(),
       },
+      { type: 'separator' },
+      {
+        label: `Copy ${count} SHAs`,
+        action: () => clipboard.writeText(this.getSelectedSHAsInListOrder()),
+      },
     ]
+  }
+
+  /**
+   * Gives the selected SHAs in the order of the list (newest first), not in
+   * the order that the user selected them.
+   */
+  private getSelectedSHAsInListOrder() {
+    const selectedSHAs = new Set(this.props.selectedSHAs)
+    return this.props.commitSHAs.filter(sha => selectedSHAs.has(sha)).join(' ')
   }
 
   private onKeyboardInsertionIndexPathChanged = (indexPath: RowIndexPath) => {
