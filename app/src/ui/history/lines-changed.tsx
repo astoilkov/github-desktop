@@ -24,7 +24,7 @@ interface ILinesChangedState {
 }
 
 /**
- * The code, test, and comment counts load on hover, not with the changeset,
+ * The code, test, JSON, and comment counts load on hover, not with the changeset,
  * because they need the full diff of every file.
  */
 export class LinesChanged extends React.Component<
@@ -80,13 +80,14 @@ export class LinesChanged extends React.Component<
     const { counts } = this.state
 
     if (counts === null || this.state.range !== range) {
-      return <>Counting code, test, and comment lines…</>
+      return <>Counting code, test, JSON, and comment lines…</>
     }
 
     return (
       <div className="lines-changed-table">
         <LineCountsRow label="Code" counts={counts.code} />
         <LineCountsRow label="Tests" counts={counts.tests} />
+        <LineCountsRow label="JSON" counts={counts.json} />
         <LineCountsRow label="Comments" counts={counts.comments} />
       </div>
     )
@@ -118,7 +119,7 @@ export class LinesChanged extends React.Component<
         this.setState({ range, counts })
       }
     } catch (e) {
-      log.error('Could not count the code, test, and comment lines', e)
+      log.error('Could not count the code, test, JSON, and comment lines', e)
     } finally {
       if (this.loadingRange === range) {
         this.loadingRange = null

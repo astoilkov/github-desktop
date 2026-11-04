@@ -8,10 +8,14 @@ export interface ILineCounts {
   readonly deleted: number
 }
 
-/** A line in a test file is a test line, also when it is a comment. */
+/**
+ * Each line is in one group only. Tests come first, then JSON, then comments,
+ * so a comment in a test file is a test line.
+ */
 export interface ICodeLineCounts {
   readonly code: ILineCounts
   readonly tests: ILineCounts
+  readonly json: ILineCounts
   readonly comments: ILineCounts
 }
 
@@ -65,11 +69,13 @@ export async function getCodeLineCounts(
 export function parseCodeLineCounts(diff: string): ICodeLineCounts {
   const code = { added: 0, deleted: 0 }
   const tests = { added: 0, deleted: 0 }
+  const json = { added: 0, deleted: 0 }
   const comments = { added: 0, deleted: 0 }
 
   let oldPath: string | null = null
   let newPath: string | null = null
   let isTest = false
+  let isJson = false
   let syntax: ICommentSyntax | null = null
   let isInHunk = false
   let addedBlockClose: string | null = null
@@ -91,6 +97,7 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
       } else if (line.startsWith('@@')) {
         const path = newPath ?? oldPath ?? ''
         isTest = isTestFile(path)
+        isJson = isJsonFile(path)
         syntax = getCommentSyntax(path)
         isInHunk = true
         addedBlockClose = null
@@ -131,6 +138,8 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
 
     if (isTest) {
       counts = tests
+    } else if (isJson) {
+      counts = json
     } else if (syntax !== null) {
       const blockClose = sign === '+' ? addedBlockClose : deletedBlockClose
       const result = readCommentLine(content, syntax, blockClose)
@@ -153,7 +162,7 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
     }
   }
 
-  return { code, tests, comments }
+  return { code, tests, json, comments }
 }
 
 const testDirectoryPattern =
@@ -165,6 +174,12 @@ const testFileNamePattern =
 export function isTestFile(path: string): boolean {
   const fileName = path.slice(path.lastIndexOf('/') + 1)
   return testDirectoryPattern.test(path) || testFileNamePattern.test(fileName)
+}
+
+const jsonExtensionPattern = /\.json[c5]?$/i
+
+export function isJsonFile(path: string): boolean {
+  return jsonExtensionPattern.test(path)
 }
 
 const slashes = ['//']
@@ -210,7 +225,6 @@ const syntaxByExtension: ReadonlyMap<string, ICommentSyntax> = new Map([
     'sol',
     'scss',
     'less',
-    'jsonc',
   ].map(e => [e, cLike] as const),
   ...[
     'sh',

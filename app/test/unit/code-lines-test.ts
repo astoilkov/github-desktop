@@ -34,7 +34,28 @@ describe('parseCodeLineCounts', () => {
     assert.deepStrictEqual(parseCodeLineCounts(diff), {
       code: { added: 1, deleted: 1 },
       tests: { added: 2, deleted: 1 },
+      json: { added: 0, deleted: 0 },
       comments: { added: 2, deleted: 1 },
+    })
+  })
+
+  it('puts the lines of a JSON file into their own group', () => {
+    const diff = [
+      fileDiff('package.json', [
+        '@@ -2 +2,2 @@',
+        '-  "a": 1',
+        '+  "a": 2',
+        '+  "b": 3',
+      ]),
+      fileDiff('tsconfig.jsonc', ['@@ -0,0 +1 @@', '+// a comment']),
+      fileDiff('test/fixture.json', ['@@ -0,0 +1 @@', '+{}']),
+    ].join('\n')
+
+    assert.deepStrictEqual(parseCodeLineCounts(diff), {
+      code: { added: 0, deleted: 0 },
+      tests: { added: 1, deleted: 0 },
+      json: { added: 3, deleted: 1 },
+      comments: { added: 0, deleted: 0 },
     })
   })
 
@@ -51,6 +72,7 @@ describe('parseCodeLineCounts', () => {
     assert.deepStrictEqual(parseCodeLineCounts(diff), {
       code: { added: 2, deleted: 0 },
       tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
       comments: { added: 3, deleted: 0 },
     })
   })
@@ -78,6 +100,7 @@ describe('parseCodeLineCounts', () => {
     assert.deepStrictEqual(parseCodeLineCounts(diff), {
       code: { added: 1, deleted: 0 },
       tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
       comments: { added: 1, deleted: 1 },
     })
   })
@@ -92,6 +115,7 @@ describe('parseCodeLineCounts', () => {
     assert.deepStrictEqual(parseCodeLineCounts(diff), {
       code: { added: 0, deleted: 1 },
       tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
       comments: { added: 0, deleted: 1 },
     })
   })
@@ -132,6 +156,7 @@ describe('parseCodeLineCounts', () => {
     assert.deepStrictEqual(parseCodeLineCounts(diff), {
       code: { added: 0, deleted: 0 },
       tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
       comments: { added: 0, deleted: 0 },
     })
   })

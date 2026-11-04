@@ -1,9 +1,9 @@
 diff --git a/app/src/lib/git/code-lines.ts b/app/src/lib/git/code-lines.ts
 new file mode 100644
-index 0000000000..51e7b05203
+index 0000000000..6f351814d8
 --- /dev/null
 +++ b/app/src/lib/git/code-lines.ts
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,363 @@
 +import { GitError } from 'dugite'
 +import { git } from './core'
 +import { NullTreeSHA } from './diff-index'
@@ -14,10 +14,14 @@ index 0000000000..51e7b05203
 +  readonly deleted: number
 +}
 +
-+/** A line in a test file is a test line, also when it is a comment. */
++/**
++ * Each line is in one group only. Tests come first, then JSON, then comments,
++ * so a comment in a test file is a test line.
++ */
 +export interface ICodeLineCounts {
 +  readonly code: ILineCounts
 +  readonly tests: ILineCounts
++  readonly json: ILineCounts
 +  readonly comments: ILineCounts
 +}
 +
@@ -71,11 +75,13 @@ index 0000000000..51e7b05203
 +export function parseCodeLineCounts(diff: string): ICodeLineCounts {
 +  const code = { added: 0, deleted: 0 }
 +  const tests = { added: 0, deleted: 0 }
++  const json = { added: 0, deleted: 0 }
 +  const comments = { added: 0, deleted: 0 }
 +
 +  let oldPath: string | null = null
 +  let newPath: string | null = null
 +  let isTest = false
++  let isJson = false
 +  let syntax: ICommentSyntax | null = null
 +  let isInHunk = false
 +  let addedBlockClose: string | null = null
@@ -97,6 +103,7 @@ index 0000000000..51e7b05203
 +      } else if (line.startsWith('@@')) {
 +        const path = newPath ?? oldPath ?? ''
 +        isTest = isTestFile(path)
++        isJson = isJsonFile(path)
 +        syntax = getCommentSyntax(path)
 +        isInHunk = true
 +        addedBlockClose = null
@@ -137,6 +144,8 @@ index 0000000000..51e7b05203
 +
 +    if (isTest) {
 +      counts = tests
++    } else if (isJson) {
++      counts = json
 +    } else if (syntax !== null) {
 +      const blockClose = sign === '+' ? addedBlockClose : deletedBlockClose
 +      const result = readCommentLine(content, syntax, blockClose)
@@ -159,7 +168,7 @@ index 0000000000..51e7b05203
 +    }
 +  }
 +
-+  return { code, tests, comments }
++  return { code, tests, json, comments }
 +}
 +
 +const testDirectoryPattern =
@@ -171,6 +180,12 @@ index 0000000000..51e7b05203
 +export function isTestFile(path: string): boolean {
 +  const fileName = path.slice(path.lastIndexOf('/') + 1)
 +  return testDirectoryPattern.test(path) || testFileNamePattern.test(fileName)
++}
++
++const jsonExtensionPattern = /\.json[c5]?$/i
++
++export function isJsonFile(path: string): boolean {
++  return jsonExtensionPattern.test(path)
 +}
 +
 +const slashes = ['//']
@@ -216,7 +231,6 @@ index 0000000000..51e7b05203
 +    'sol',
 +    'scss',
 +    'less',
-+    'jsonc',
 +  ].map(e => [e, cLike] as const),
 +  ...[
 +    'sh',
@@ -413,10 +427,10 @@ index 236524d776..9256d5c57b 100644
  
 diff --git a/app/src/ui/history/lines-changed.tsx b/app/src/ui/history/lines-changed.tsx
 new file mode 100644
-index 0000000000..f143fad732
+index 0000000000..b75d129159
 --- /dev/null
 +++ b/app/src/ui/history/lines-changed.tsx
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,152 @@
 +import * as React from 'react'
 +import { Octicon } from '../octicons'
 +import * as octicons from '../octicons/octicons.generated'
@@ -443,7 +457,7 @@ index 0000000000..f143fad732
 +}
 +
 +/**
-+ * The code, test, and comment counts load on hover, not with the changeset,
++ * The code, test, JSON, and comment counts load on hover, not with the changeset,
 + * because they need the full diff of every file.
 + */
 +export class LinesChanged extends React.Component<
@@ -499,13 +513,14 @@ index 0000000000..f143fad732
 +    const { counts } = this.state
 +
 +    if (counts === null || this.state.range !== range) {
-+      return <>Counting code, test, and comment lines…</>
++      return <>Counting code, test, JSON, and comment lines…</>
 +    }
 +
 +    return (
 +      <div className="lines-changed-table">
 +        <LineCountsRow label="Code" counts={counts.code} />
 +        <LineCountsRow label="Tests" counts={counts.tests} />
++        <LineCountsRow label="JSON" counts={counts.json} />
 +        <LineCountsRow label="Comments" counts={counts.comments} />
 +      </div>
 +    )
@@ -537,7 +552,7 @@ index 0000000000..f143fad732
 +        this.setState({ range, counts })
 +      }
 +    } catch (e) {
-+      log.error('Could not count the code, test, and comment lines', e)
++      log.error('Could not count the code, test, JSON, and comment lines', e)
 +    } finally {
 +      if (this.loadingRange === range) {
 +        this.loadingRange = null
@@ -602,10 +617,10 @@ index 3e76b9ca5a..307d228ebc 100644
 +}
 diff --git a/app/test/unit/code-lines-test.ts b/app/test/unit/code-lines-test.ts
 new file mode 100644
-index 0000000000..838988c0c2
+index 0000000000..0fca5a1bbd
 --- /dev/null
 +++ b/app/test/unit/code-lines-test.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,194 @@
 +import { describe, it } from 'node:test'
 +import assert from 'node:assert'
 +import { isTestFile, parseCodeLineCounts } from '../../src/lib/git/code-lines'
@@ -642,7 +657,28 @@ index 0000000000..838988c0c2
 +    assert.deepStrictEqual(parseCodeLineCounts(diff), {
 +      code: { added: 1, deleted: 1 },
 +      tests: { added: 2, deleted: 1 },
++      json: { added: 0, deleted: 0 },
 +      comments: { added: 2, deleted: 1 },
++    })
++  })
++
++  it('puts the lines of a JSON file into their own group', () => {
++    const diff = [
++      fileDiff('package.json', [
++        '@@ -2 +2,2 @@',
++        '-  "a": 1',
++        '+  "a": 2',
++        '+  "b": 3',
++      ]),
++      fileDiff('tsconfig.jsonc', ['@@ -0,0 +1 @@', '+// a comment']),
++      fileDiff('test/fixture.json', ['@@ -0,0 +1 @@', '+{}']),
++    ].join('\n')
++
++    assert.deepStrictEqual(parseCodeLineCounts(diff), {
++      code: { added: 0, deleted: 0 },
++      tests: { added: 1, deleted: 0 },
++      json: { added: 3, deleted: 1 },
++      comments: { added: 0, deleted: 0 },
 +    })
 +  })
 +
@@ -659,6 +695,7 @@ index 0000000000..838988c0c2
 +    assert.deepStrictEqual(parseCodeLineCounts(diff), {
 +      code: { added: 2, deleted: 0 },
 +      tests: { added: 0, deleted: 0 },
++      json: { added: 0, deleted: 0 },
 +      comments: { added: 3, deleted: 0 },
 +    })
 +  })
@@ -686,6 +723,7 @@ index 0000000000..838988c0c2
 +    assert.deepStrictEqual(parseCodeLineCounts(diff), {
 +      code: { added: 1, deleted: 0 },
 +      tests: { added: 0, deleted: 0 },
++      json: { added: 0, deleted: 0 },
 +      comments: { added: 1, deleted: 1 },
 +    })
 +  })
@@ -700,6 +738,7 @@ index 0000000000..838988c0c2
 +    assert.deepStrictEqual(parseCodeLineCounts(diff), {
 +      code: { added: 0, deleted: 1 },
 +      tests: { added: 0, deleted: 0 },
++      json: { added: 0, deleted: 0 },
 +      comments: { added: 0, deleted: 1 },
 +    })
 +  })
@@ -740,6 +779,7 @@ index 0000000000..838988c0c2
 +    assert.deepStrictEqual(parseCodeLineCounts(diff), {
 +      code: { added: 0, deleted: 0 },
 +      tests: { added: 0, deleted: 0 },
++      json: { added: 0, deleted: 0 },
 +      comments: { added: 0, deleted: 0 },
 +    })
 +  })
