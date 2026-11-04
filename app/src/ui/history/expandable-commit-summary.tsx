@@ -23,6 +23,7 @@ import { Avatar } from '../lib/avatar'
 import { CopyButton } from '../copy-button'
 import { Account } from '../../models/account'
 import { Emoji } from '../../lib/emoji'
+import { LinesChanged } from './lines-changed'
 
 interface IExpandableCommitSummaryProps {
   readonly repository: Repository
@@ -520,7 +521,7 @@ export class ExpandableCommitSummary extends React.Component<
 
   private renderMetaItems = () => {
     if (this.props.selectedCommits.length > 1) {
-      return null
+      return <div className="ecs-meta">{this.renderLinesChanged()}</div>
     }
 
     return (
@@ -551,30 +552,14 @@ export class ExpandableCommitSummary extends React.Component<
   }
 
   private renderLinesChanged() {
-    const { changesetData, selectedCommits, isExpanded } = this.props
-    const { linesAdded, linesDeleted } = changesetData
-
-    if (
-      (linesAdded === 0 && linesDeleted === 0) ||
-      selectedCommits.length > 1
-    ) {
-      return null
-    }
+    const { repository, changesetData, isExpanded } = this.props
 
     return (
-      <div className="ecs-meta-item lines-added-deleted">
-        {isExpanded ? <Octicon symbol={octicons.diff} /> : null}
-        <div className="lines-added">
-          {!isExpanded ? <>+{linesAdded}</> : <>{linesAdded} added lines</>}
-        </div>
-        <div className="lines-deleted">
-          {!isExpanded ? (
-            <>-{linesDeleted}</>
-          ) : (
-            <>{linesDeleted} removed lines</>
-          )}
-        </div>
-      </div>
+      <LinesChanged
+        repository={repository}
+        changesetData={changesetData}
+        isExpanded={isExpanded}
+      />
     )
   }
 

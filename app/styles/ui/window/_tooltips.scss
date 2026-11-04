@@ -254,3 +254,27 @@ button.toggletip {
   color: inherit;
   background-color: inherit;
 }
+
+.tooltip.lines-changed-tooltip {
+  .lines-changed-table {
+    display: grid;
+    grid-template-columns: auto auto auto;
+    column-gap: var(--spacing);
+    row-gap: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .lines-added,
+  .lines-deleted {
+    text-align: right;
+  }
+
+  // The tooltip is dark in both themes, so use the colors of the dark theme.
+  .lines-added {
+    color: $green;
+  }
+
+  .lines-deleted {
+    color: $red;
+  }
+}
