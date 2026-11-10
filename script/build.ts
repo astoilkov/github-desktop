@@ -225,18 +225,16 @@ function packageApp() {
       identityValidation: localSignIdentity ? false : !isDevelopmentBuild,
     },
     osxNotarize,
-    protocols: [
-      {
-        name: getBundleID(),
-        schemes: [
-          !isDevelopmentBuild
-            ? 'x-github-desktop-auth'
-            : 'x-github-desktop-dev-auth',
-          'x-github-client',
-          'github-mac',
+    // Dev builds don't claim URL schemes, so they don't take them from the
+    // production app.
+    protocols: isDevelopmentBuild
+      ? []
+      : [
+          {
+            name: getBundleID(),
+            schemes: ['x-github-desktop-auth', 'x-github-client', 'github-mac'],
+          },
         ],
-      },
-    ],
     extendInfo: extendInfoPath,
 
     // Windows

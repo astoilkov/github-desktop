@@ -334,7 +334,11 @@ app.on('ready', () => {
 
   readyTime = now() - launchTime
 
-  possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
+  // Dev builds don't claim URL schemes, so they don't take them from the
+  // production app.
+  if (!__DEV__) {
+    possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
+  }
 
   createWindow()
 

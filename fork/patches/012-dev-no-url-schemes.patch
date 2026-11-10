@@ -1,0 +1,49 @@
+diff --git a/app/src/main-process/main.ts b/app/src/main-process/main.ts
+index a9d4a4206e..50b2a46fc2 100644
+--- a/app/src/main-process/main.ts
++++ b/app/src/main-process/main.ts
+@@ -334,7 +334,11 @@ app.on('ready', () => {
+ 
+   readyTime = now() - launchTime
+ 
+-  possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
++  // Dev builds don't claim URL schemes, so they don't take them from the
++  // production app.
++  if (!__DEV__) {
++    possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
++  }
+ 
+   createWindow()
+ 
+diff --git a/script/build.ts b/script/build.ts
+index b5ec4c0c45..82555fd847 100755
+--- a/script/build.ts
++++ b/script/build.ts
+@@ -225,18 +225,16 @@ function packageApp() {
+       identityValidation: localSignIdentity ? false : !isDevelopmentBuild,
+     },
+     osxNotarize,
+-    protocols: [
+-      {
+-        name: getBundleID(),
+-        schemes: [
+-          !isDevelopmentBuild
+-            ? 'x-github-desktop-auth'
+-            : 'x-github-desktop-dev-auth',
+-          'x-github-client',
+-          'github-mac',
++    // Dev builds don't claim URL schemes, so they don't take them from the
++    // production app.
++    protocols: isDevelopmentBuild
++      ? []
++      : [
++          {
++            name: getBundleID(),
++            schemes: ['x-github-desktop-auth', 'x-github-client', 'github-mac'],
++          },
+         ],
+-      },
+-    ],
+     extendInfo: extendInfoPath,
+ 
+     // Windows
