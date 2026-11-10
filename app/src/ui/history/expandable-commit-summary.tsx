@@ -24,6 +24,7 @@ import { CopyButton } from '../copy-button'
 import { Account } from '../../models/account'
 import { Emoji } from '../../lib/emoji'
 import { LinesChanged } from './lines-changed'
+import { getCodeLineCounts } from '../../lib/git/code-lines'
 
 interface IExpandableCommitSummaryProps {
   readonly repository: Repository
@@ -552,15 +553,24 @@ export class ExpandableCommitSummary extends React.Component<
   }
 
   private renderLinesChanged() {
-    const { repository, changesetData, isExpanded } = this.props
+    const { changesetData, isExpanded } = this.props
 
     return (
       <LinesChanged
-        repository={repository}
-        changesetData={changesetData}
+        className="ecs-meta-item"
+        linesAdded={changesetData.linesAdded}
+        linesDeleted={changesetData.linesDeleted}
         isExpanded={isExpanded}
+        countsKey={getRange(changesetData)}
+        getCounts={this.getCodeLineCounts}
       />
     )
+  }
+
+  private getCodeLineCounts = () => {
+    const { repository, changesetData } = this.props
+    const file = changesetData.files[0]
+    return getCodeLineCounts(repository, file.parentCommitish, file.commitish)
   }
 
   private renderTags() {
@@ -582,4 +592,12 @@ export class ExpandableCommitSummary extends React.Component<
       </div>
     )
   }
+}
+
+/** All the files of a changeset share the same range, as `parent..commit`. */
+function getRange(changesetData: IChangesetData): string | null {
+  const file = changesetData.files.at(0)
+  return file === undefined
+    ? null
+    : `${file.parentCommitish}..${file.commitish}`
 }

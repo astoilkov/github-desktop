@@ -75,6 +75,7 @@ import {
 import { ChangesListFilterOptions } from './changes-list-filter-options'
 import { HookProgress } from '../../lib/git'
 import { formatNumber } from '../../lib/format-number'
+import { WorkingDirectoryLinesChanged } from './working-directory-lines-changed'
 
 export interface IChangesListItem extends IFilterListItem {
   readonly id: string
@@ -1275,6 +1276,10 @@ export class FilterChangesList extends React.Component<
           ariaLabelledBy="changes-list-check-all-label"
           className="changes-list-check-all"
           label={checkAllLabel}
+        />
+        <WorkingDirectoryLinesChanged
+          repository={this.props.repository}
+          workingDirectory={workingDirectory}
         />
       </div>
     )

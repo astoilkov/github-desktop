@@ -1,47 +1,45 @@
 import * as React from 'react'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
-import { Repository } from '../../models/repository'
-import { IChangesetData } from '../../lib/git'
-import {
-  getCodeLineCounts,
-  ICodeLineCounts,
-  ILineCounts,
-} from '../../lib/git/code-lines'
+import { ICodeLineCounts, ILineCounts } from '../../lib/git/code-lines'
 import { Tooltip, TooltipDirection } from '../lib/tooltip'
 import { createObservableRef } from '../lib/observable-ref'
 
 interface ILinesChangedProps {
-  readonly repository: Repository
-  readonly changesetData: IChangesetData
+  readonly linesAdded: number
+  readonly linesDeleted: number
   readonly isExpanded: boolean
+  readonly className: string
+
+  /** Changes when the lines change, so that the counts load again. */
+  readonly countsKey: string | null
+  readonly getCounts: () => Promise<ICodeLineCounts>
 }
 
 interface ILinesChangedState {
-  /** The diff range that `counts` is for, as `parent..commit`. */
-  readonly range: string | null
+  /** The `countsKey` that `counts` is for. */
+  readonly key: string | null
   readonly counts: ICodeLineCounts | null
 }
 
 /**
- * The code, test, JSON, and comment counts load on hover, not with the changeset,
- * because they need the full diff of every file.
+ * The code, test, JSON, and comment counts load on hover, because they can
+ * need the full diff of every file.
  */
 export class LinesChanged extends React.Component<
   ILinesChangedProps,
   ILinesChangedState
 > {
   private readonly wrapperRef = createObservableRef<HTMLDivElement>()
-  private loadingRange: string | null = null
+  private loadingKey: string | null = null
 
   public constructor(props: ILinesChangedProps) {
     super(props)
-    this.state = { range: null, counts: null }
+    this.state = { key: null, counts: null }
   }
 
   public render() {
-    const { changesetData, isExpanded } = this.props
-    const { linesAdded, linesDeleted } = changesetData
+    const { linesAdded, linesDeleted, isExpanded, className } = this.props
 
     if (linesAdded === 0 && linesDeleted === 0) {
       return null
@@ -49,7 +47,7 @@ export class LinesChanged extends React.Component<
 
     return (
       <div
-        className="ecs-meta-item lines-added-deleted"
+        className={`${className} lines-added-deleted`}
         ref={this.wrapperRef}
         onMouseEnter={this.onMouseEnter}
       >
@@ -76,10 +74,9 @@ export class LinesChanged extends React.Component<
   }
 
   private renderTooltip() {
-    const range = getRange(this.props.changesetData)
-    const { counts } = this.state
+    const { counts, key } = this.state
 
-    if (counts === null || this.state.range !== range) {
+    if (counts === null || key !== this.props.countsKey) {
       return <>Counting code, test, JSON, and comment lines…</>
     }
 
@@ -94,35 +91,25 @@ export class LinesChanged extends React.Component<
   }
 
   private onMouseEnter = async () => {
-    const { repository, changesetData } = this.props
-    const range = getRange(changesetData)
-    const file = changesetData.files.at(0)
+    const { countsKey: key, getCounts } = this.props
 
-    if (
-      file === undefined ||
-      range === this.state.range ||
-      range === this.loadingRange
-    ) {
+    if (key === null || key === this.state.key || key === this.loadingKey) {
       return
     }
 
-    this.loadingRange = range
+    this.loadingKey = key
 
     try {
-      const counts = await getCodeLineCounts(
-        repository,
-        file.parentCommitish,
-        file.commitish
-      )
+      const counts = await getCounts()
 
-      if (range === getRange(this.props.changesetData)) {
-        this.setState({ range, counts })
+      if (key === this.props.countsKey) {
+        this.setState({ key, counts })
       }
     } catch (e) {
       log.error('Could not count the code, test, JSON, and comment lines', e)
     } finally {
-      if (this.loadingRange === range) {
-        this.loadingRange = null
+      if (this.loadingKey === key) {
+        this.loadingKey = null
       }
     }
   }
@@ -141,12 +128,4 @@ function LineCountsRow({ label, counts }: ILineCountsRowProps) {
       <span className="lines-deleted">-{counts.deleted}</span>
     </>
   )
-}
-
-/** All the files of a changeset share the same range. */
-function getRange(changesetData: IChangesetData): string | null {
-  const file = changesetData.files.at(0)
-  return file === undefined
-    ? null
-    : `${file.parentCommitish}..${file.commitish}`
 }

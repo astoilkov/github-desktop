@@ -1,3 +1,5 @@
+import * as Path from 'path'
+import { readFile, stat } from 'fs/promises'
 import { GitError } from 'dugite'
 import { git } from './core'
 import { NullTreeSHA } from './diff-index'
@@ -34,35 +36,25 @@ export async function getCodeLineCounts(
   parentCommitish: string,
   commitish: string
 ): Promise<ICodeLineCounts> {
-  const args = [
-    '-c',
-    'core.quotePath=false',
-    'diff',
-    '--no-color',
-    '--no-ext-diff',
-    '--no-textconv',
-    '--src-prefix=a/',
-    '--dst-prefix=b/',
-    '-C',
-    '-M',
-    parentCommitish,
-    commitish,
-    '--',
-  ]
-
-  const { stdout, gitError } = await git(
-    args,
-    repository.path,
-    'getCodeLineCounts',
-    { expectedErrors: new Set([GitError.BadRevision]) }
+  return parseCodeLineCounts(
+    await getDiff(repository, parentCommitish, commitish)
   )
+}
 
-  // The parent ref is not valid when the oldest commit is a root commit.
-  if (gitError === GitError.BadRevision && parentCommitish !== NullTreeSHA) {
-    return getCodeLineCounts(repository, NullTreeSHA, commitish)
-  }
+/**
+ * `git diff HEAD` does not show untracked files, so this reads them from the
+ * disk.
+ */
+export async function getWorkingDirectoryCodeLineCounts(
+  repository: Repository,
+  untrackedPaths: ReadonlyArray<string>
+): Promise<ICodeLineCounts> {
+  const [diff, ...untrackedDiffs] = await Promise.all([
+    getDiff(repository, 'HEAD', null),
+    ...untrackedPaths.map(path => getUntrackedFileDiff(repository, path)),
+  ])
 
-  return parseCodeLineCounts(stdout)
+  return parseCodeLineCounts([diff, ...untrackedDiffs].join('\n'))
 }
 
 /** Count the lines of the output of `git diff`. */
@@ -163,6 +155,94 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
   }
 
   return { code, tests, json, comments }
+}
+
+/**
+ * With a null `commitish`, the diff is from `parentCommitish` to the working
+ * directory.
+ */
+async function getDiff(
+  repository: Repository,
+  parentCommitish: string,
+  commitish: string | null
+): Promise<string> {
+  const args = [
+    '-c',
+    'core.quotePath=false',
+    'diff',
+    '--no-color',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+    '-C',
+    '-M',
+    parentCommitish,
+    ...(commitish === null ? [] : [commitish]),
+    '--',
+  ]
+
+  const { stdout, gitError } = await git(args, repository.path, 'getDiff', {
+    expectedErrors: new Set([GitError.BadRevision]),
+  })
+
+  // The parent ref is not valid when the oldest commit is a root commit, or
+  // when HEAD has no commits yet.
+  if (gitError === GitError.BadRevision && parentCommitish !== NullTreeSHA) {
+    return getDiff(repository, NullTreeSHA, commitish)
+  }
+
+  return stdout
+}
+
+/** Larger untracked files are not counted, as they are most likely not code. */
+const maxUntrackedFileSize = 4 * 1024 * 1024
+
+/**
+ * A diff that adds all the lines of the file. It is empty for a binary file,
+ * a file that is too large, or a file that is not there anymore.
+ */
+async function getUntrackedFileDiff(
+  repository: Repository,
+  path: string
+): Promise<string> {
+  const fullPath = Path.join(repository.path, path)
+
+  try {
+    if ((await stat(fullPath)).size > maxUntrackedFileSize) {
+      return ''
+    }
+
+    const buffer = await readFile(fullPath)
+
+    // Git also finds binary files from a NUL byte in the first 8000 bytes.
+    if (buffer.subarray(0, 8000).includes(0)) {
+      return ''
+    }
+
+    return createAddedFileDiff(path, buffer.toString('utf8'))
+  } catch {
+    return ''
+  }
+}
+
+export function createAddedFileDiff(path: string, contents: string): string {
+  const lines = contents.split('\n')
+  if (lines.at(-1) === '') {
+    lines.pop()
+  }
+
+  if (lines.length === 0) {
+    return ''
+  }
+
+  return [
+    `diff --git a/${path} b/${path}`,
+    '--- /dev/null',
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map(line => `+${line}`),
+  ].join('\n')
 }
 
 const testDirectoryPattern =

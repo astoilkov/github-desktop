@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
-import { isTestFile, parseCodeLineCounts } from '../../src/lib/git/code-lines'
+import {
+  createAddedFileDiff,
+  isTestFile,
+  parseCodeLineCounts,
+} from '../../src/lib/git/code-lines'
 
 function fileDiff(path: string, hunks: ReadonlyArray<string>) {
   return [
@@ -190,5 +194,22 @@ describe('isTestFile', () => {
     ]) {
       assert.strictEqual(isTestFile(path), false, path)
     }
+  })
+})
+
+describe('createAddedFileDiff', () => {
+  it('adds each line of the file', () => {
+    const diff = [
+      createAddedFileDiff('src/a.ts', '// comment\nconst a = 1\n\n'),
+      createAddedFileDiff('src/a.test.ts', 'it()'),
+      createAddedFileDiff('src/empty.ts', ''),
+    ].join('\n')
+
+    assert.deepStrictEqual(parseCodeLineCounts(diff), {
+      code: { added: 2, deleted: 0 },
+      tests: { added: 1, deleted: 0 },
+      json: { added: 0, deleted: 0 },
+      comments: { added: 1, deleted: 0 },
+    })
   })
 })

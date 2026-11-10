@@ -1,9 +1,11 @@
 diff --git a/app/src/lib/git/code-lines.ts b/app/src/lib/git/code-lines.ts
 new file mode 100644
-index 0000000000..6f351814d8
+index 0000000000..4d71e61d84
 --- /dev/null
 +++ b/app/src/lib/git/code-lines.ts
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,443 @@
++import * as Path from 'path'
++import { readFile, stat } from 'fs/promises'
 +import { GitError } from 'dugite'
 +import { git } from './core'
 +import { NullTreeSHA } from './diff-index'
@@ -40,35 +42,25 @@ index 0000000000..6f351814d8
 +  parentCommitish: string,
 +  commitish: string
 +): Promise<ICodeLineCounts> {
-+  const args = [
-+    '-c',
-+    'core.quotePath=false',
-+    'diff',
-+    '--no-color',
-+    '--no-ext-diff',
-+    '--no-textconv',
-+    '--src-prefix=a/',
-+    '--dst-prefix=b/',
-+    '-C',
-+    '-M',
-+    parentCommitish,
-+    commitish,
-+    '--',
-+  ]
-+
-+  const { stdout, gitError } = await git(
-+    args,
-+    repository.path,
-+    'getCodeLineCounts',
-+    { expectedErrors: new Set([GitError.BadRevision]) }
++  return parseCodeLineCounts(
++    await getDiff(repository, parentCommitish, commitish)
 +  )
++}
 +
-+  // The parent ref is not valid when the oldest commit is a root commit.
-+  if (gitError === GitError.BadRevision && parentCommitish !== NullTreeSHA) {
-+    return getCodeLineCounts(repository, NullTreeSHA, commitish)
-+  }
++/**
++ * `git diff HEAD` does not show untracked files, so this reads them from the
++ * disk.
++ */
++export async function getWorkingDirectoryCodeLineCounts(
++  repository: Repository,
++  untrackedPaths: ReadonlyArray<string>
++): Promise<ICodeLineCounts> {
++  const [diff, ...untrackedDiffs] = await Promise.all([
++    getDiff(repository, 'HEAD', null),
++    ...untrackedPaths.map(path => getUntrackedFileDiff(repository, path)),
++  ])
 +
-+  return parseCodeLineCounts(stdout)
++  return parseCodeLineCounts([diff, ...untrackedDiffs].join('\n'))
 +}
 +
 +/** Count the lines of the output of `git diff`. */
@@ -169,6 +161,94 @@ index 0000000000..6f351814d8
 +  }
 +
 +  return { code, tests, json, comments }
++}
++
++/**
++ * With a null `commitish`, the diff is from `parentCommitish` to the working
++ * directory.
++ */
++async function getDiff(
++  repository: Repository,
++  parentCommitish: string,
++  commitish: string | null
++): Promise<string> {
++  const args = [
++    '-c',
++    'core.quotePath=false',
++    'diff',
++    '--no-color',
++    '--no-ext-diff',
++    '--no-textconv',
++    '--src-prefix=a/',
++    '--dst-prefix=b/',
++    '-C',
++    '-M',
++    parentCommitish,
++    ...(commitish === null ? [] : [commitish]),
++    '--',
++  ]
++
++  const { stdout, gitError } = await git(args, repository.path, 'getDiff', {
++    expectedErrors: new Set([GitError.BadRevision]),
++  })
++
++  // The parent ref is not valid when the oldest commit is a root commit, or
++  // when HEAD has no commits yet.
++  if (gitError === GitError.BadRevision && parentCommitish !== NullTreeSHA) {
++    return getDiff(repository, NullTreeSHA, commitish)
++  }
++
++  return stdout
++}
++
++/** Larger untracked files are not counted, as they are most likely not code. */
++const maxUntrackedFileSize = 4 * 1024 * 1024
++
++/**
++ * A diff that adds all the lines of the file. It is empty for a binary file,
++ * a file that is too large, or a file that is not there anymore.
++ */
++async function getUntrackedFileDiff(
++  repository: Repository,
++  path: string
++): Promise<string> {
++  const fullPath = Path.join(repository.path, path)
++
++  try {
++    if ((await stat(fullPath)).size > maxUntrackedFileSize) {
++      return ''
++    }
++
++    const buffer = await readFile(fullPath)
++
++    // Git also finds binary files from a NUL byte in the first 8000 bytes.
++    if (buffer.subarray(0, 8000).includes(0)) {
++      return ''
++    }
++
++    return createAddedFileDiff(path, buffer.toString('utf8'))
++  } catch {
++    return ''
++  }
++}
++
++export function createAddedFileDiff(path: string, contents: string): string {
++  const lines = contents.split('\n')
++  if (lines.at(-1) === '') {
++    lines.pop()
++  }
++
++  if (lines.length === 0) {
++    return ''
++  }
++
++  return [
++    `diff --git a/${path} b/${path}`,
++    '--- /dev/null',
++    `+++ b/${path}`,
++    `@@ -0,0 +1,${lines.length} @@`,
++    ...lines.map(line => `+${line}`),
++  ].join('\n')
 +}
 +
 +const testDirectoryPattern =
@@ -367,19 +447,163 @@ index 0000000000..6f351814d8
 +
 +  return path.startsWith(prefix) ? path.slice(prefix.length) : null
 +}
+diff --git a/app/src/ui/changes/filter-changes-list.tsx b/app/src/ui/changes/filter-changes-list.tsx
+index 11fad249d8..9d298e727c 100644
+--- a/app/src/ui/changes/filter-changes-list.tsx
++++ b/app/src/ui/changes/filter-changes-list.tsx
+@@ -75,6 +75,7 @@ import {
+ import { ChangesListFilterOptions } from './changes-list-filter-options'
+ import { HookProgress } from '../../lib/git'
+ import { formatNumber } from '../../lib/format-number'
++import { WorkingDirectoryLinesChanged } from './working-directory-lines-changed'
+ 
+ export interface IChangesListItem extends IFilterListItem {
+   readonly id: string
+@@ -1276,6 +1277,10 @@ export class FilterChangesList extends React.Component<
+           className="changes-list-check-all"
+           label={checkAllLabel}
+         />
++        <WorkingDirectoryLinesChanged
++          repository={this.props.repository}
++          workingDirectory={workingDirectory}
++        />
+       </div>
+     )
+   }
+diff --git a/app/src/ui/changes/working-directory-lines-changed.tsx b/app/src/ui/changes/working-directory-lines-changed.tsx
+new file mode 100644
+index 0000000000..8d2268a173
+--- /dev/null
++++ b/app/src/ui/changes/working-directory-lines-changed.tsx
+@@ -0,0 +1,114 @@
++import * as React from 'react'
++import { Repository } from '../../models/repository'
++import { AppFileStatusKind, WorkingDirectoryStatus } from '../../models/status'
++import {
++  getWorkingDirectoryCodeLineCounts,
++  ICodeLineCounts,
++} from '../../lib/git/code-lines'
++import { LinesChanged } from '../history/lines-changed'
++
++interface IWorkingDirectoryLinesChangedProps {
++  readonly repository: Repository
++  readonly workingDirectory: WorkingDirectoryStatus
++}
++
++interface IWorkingDirectoryLinesChangedState {
++  /** Goes up by one each time the counts load, so the tooltip gets them. */
++  readonly loadCount: number
++  readonly counts: ICodeLineCounts | null
++}
++
++/**
++ * Unlike for a commit, the counts load with each change of the working
++ * directory, because no other count of its lines exists.
++ */
++export class WorkingDirectoryLinesChanged extends React.Component<
++  IWorkingDirectoryLinesChangedProps,
++  IWorkingDirectoryLinesChangedState
++> {
++  private lastRequest = 0
++  private isUnmounted = false
++
++  public constructor(props: IWorkingDirectoryLinesChangedProps) {
++    super(props)
++    this.state = { loadCount: 0, counts: null }
++  }
++
++  public componentDidMount() {
++    this.loadCounts()
++  }
++
++  public componentDidUpdate(prevProps: IWorkingDirectoryLinesChangedProps) {
++    if (prevProps.repository.id !== this.props.repository.id) {
++      this.setState({ counts: null })
++    }
++
++    if (
++      prevProps.repository.id !== this.props.repository.id ||
++      prevProps.workingDirectory !== this.props.workingDirectory
++    ) {
++      this.loadCounts()
++    }
++  }
++
++  public componentWillUnmount() {
++    this.isUnmounted = true
++  }
++
++  public render() {
++    const { counts, loadCount } = this.state
++
++    if (counts === null || this.props.workingDirectory.files.length === 0) {
++      return null
++    }
++
++    const groups = [counts.code, counts.tests, counts.json, counts.comments]
++
++    return (
++      <LinesChanged
++        className="working-directory-lines-changed"
++        linesAdded={groups.reduce((sum, c) => sum + c.added, 0)}
++        linesDeleted={groups.reduce((sum, c) => sum + c.deleted, 0)}
++        isExpanded={false}
++        countsKey={`${loadCount}`}
++        getCounts={this.getCounts}
++      />
++    )
++  }
++
++  private getCounts = async () => {
++    const { counts } = this.state
++
++    if (counts === null) {
++      throw new Error('The counts did not load')
++    }
++
++    return counts
++  }
++
++  private async loadCounts() {
++    const { repository, workingDirectory } = this.props
++    const request = ++this.lastRequest
++
++    if (workingDirectory.files.length === 0) {
++      return
++    }
++
++    const untrackedPaths = workingDirectory.files
++      .filter(f => f.status.kind === AppFileStatusKind.Untracked)
++      .map(f => f.path)
++
++    try {
++      const counts = await getWorkingDirectoryCodeLineCounts(
++        repository,
++        untrackedPaths
++      )
++
++      if (!this.isUnmounted && request === this.lastRequest) {
++        this.setState(state => ({ loadCount: state.loadCount + 1, counts }))
++      }
++    } catch (e) {
++      log.error('Could not count the lines of the uncommitted changes', e)
++    }
++  }
++}
 diff --git a/app/src/ui/history/expandable-commit-summary.tsx b/app/src/ui/history/expandable-commit-summary.tsx
-index 236524d776..9256d5c57b 100644
+index 236524d776..4dfc9a51c1 100644
 --- a/app/src/ui/history/expandable-commit-summary.tsx
 +++ b/app/src/ui/history/expandable-commit-summary.tsx
-@@ -23,6 +23,7 @@ import { Avatar } from '../lib/avatar'
+@@ -23,6 +23,8 @@ import { Avatar } from '../lib/avatar'
  import { CopyButton } from '../copy-button'
  import { Account } from '../../models/account'
  import { Emoji } from '../../lib/emoji'
 +import { LinesChanged } from './lines-changed'
++import { getCodeLineCounts } from '../../lib/git/code-lines'
  
  interface IExpandableCommitSummaryProps {
    readonly repository: Repository
-@@ -520,7 +521,7 @@ export class ExpandableCommitSummary extends React.Component<
+@@ -520,7 +522,7 @@ export class ExpandableCommitSummary extends React.Component<
  
    private renderMetaItems = () => {
      if (this.props.selectedCommits.length > 1) {
@@ -388,7 +612,7 @@ index 236524d776..9256d5c57b 100644
      }
  
      return (
-@@ -551,30 +552,14 @@ export class ExpandableCommitSummary extends React.Component<
+@@ -551,33 +553,26 @@ export class ExpandableCommitSummary extends React.Component<
    }
  
    private renderLinesChanged() {
@@ -401,7 +625,7 @@ index 236524d776..9256d5c57b 100644
 -    ) {
 -      return null
 -    }
-+    const { repository, changesetData, isExpanded } = this.props
++    const { changesetData, isExpanded } = this.props
  
      return (
 -      <div className="ecs-meta-item lines-added-deleted">
@@ -418,63 +642,85 @@ index 236524d776..9256d5c57b 100644
 -        </div>
 -      </div>
 +      <LinesChanged
-+        repository={repository}
-+        changesetData={changesetData}
++        className="ecs-meta-item"
++        linesAdded={changesetData.linesAdded}
++        linesDeleted={changesetData.linesDeleted}
 +        isExpanded={isExpanded}
++        countsKey={getRange(changesetData)}
++        getCounts={this.getCodeLineCounts}
 +      />
      )
    }
  
++  private getCodeLineCounts = () => {
++    const { repository, changesetData } = this.props
++    const file = changesetData.files[0]
++    return getCodeLineCounts(repository, file.parentCommitish, file.commitish)
++  }
++
+   private renderTags() {
+     const { selectedCommits } = this.props
+     if (selectedCommits.length > 1) {
+@@ -598,3 +593,11 @@ export class ExpandableCommitSummary extends React.Component<
+     )
+   }
+ }
++
++/** All the files of a changeset share the same range, as `parent..commit`. */
++function getRange(changesetData: IChangesetData): string | null {
++  const file = changesetData.files.at(0)
++  return file === undefined
++    ? null
++    : `${file.parentCommitish}..${file.commitish}`
++}
 diff --git a/app/src/ui/history/lines-changed.tsx b/app/src/ui/history/lines-changed.tsx
 new file mode 100644
-index 0000000000..b75d129159
+index 0000000000..883e2111d3
 --- /dev/null
 +++ b/app/src/ui/history/lines-changed.tsx
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,131 @@
 +import * as React from 'react'
 +import { Octicon } from '../octicons'
 +import * as octicons from '../octicons/octicons.generated'
-+import { Repository } from '../../models/repository'
-+import { IChangesetData } from '../../lib/git'
-+import {
-+  getCodeLineCounts,
-+  ICodeLineCounts,
-+  ILineCounts,
-+} from '../../lib/git/code-lines'
++import { ICodeLineCounts, ILineCounts } from '../../lib/git/code-lines'
 +import { Tooltip, TooltipDirection } from '../lib/tooltip'
 +import { createObservableRef } from '../lib/observable-ref'
 +
 +interface ILinesChangedProps {
-+  readonly repository: Repository
-+  readonly changesetData: IChangesetData
++  readonly linesAdded: number
++  readonly linesDeleted: number
 +  readonly isExpanded: boolean
++  readonly className: string
++
++  /** Changes when the lines change, so that the counts load again. */
++  readonly countsKey: string | null
++  readonly getCounts: () => Promise<ICodeLineCounts>
 +}
 +
 +interface ILinesChangedState {
-+  /** The diff range that `counts` is for, as `parent..commit`. */
-+  readonly range: string | null
++  /** The `countsKey` that `counts` is for. */
++  readonly key: string | null
 +  readonly counts: ICodeLineCounts | null
 +}
 +
 +/**
-+ * The code, test, JSON, and comment counts load on hover, not with the changeset,
-+ * because they need the full diff of every file.
++ * The code, test, JSON, and comment counts load on hover, because they can
++ * need the full diff of every file.
 + */
 +export class LinesChanged extends React.Component<
 +  ILinesChangedProps,
 +  ILinesChangedState
 +> {
 +  private readonly wrapperRef = createObservableRef<HTMLDivElement>()
-+  private loadingRange: string | null = null
++  private loadingKey: string | null = null
 +
 +  public constructor(props: ILinesChangedProps) {
 +    super(props)
-+    this.state = { range: null, counts: null }
++    this.state = { key: null, counts: null }
 +  }
 +
 +  public render() {
-+    const { changesetData, isExpanded } = this.props
-+    const { linesAdded, linesDeleted } = changesetData
++    const { linesAdded, linesDeleted, isExpanded, className } = this.props
 +
 +    if (linesAdded === 0 && linesDeleted === 0) {
 +      return null
@@ -482,7 +728,7 @@ index 0000000000..b75d129159
 +
 +    return (
 +      <div
-+        className="ecs-meta-item lines-added-deleted"
++        className={`${className} lines-added-deleted`}
 +        ref={this.wrapperRef}
 +        onMouseEnter={this.onMouseEnter}
 +      >
@@ -509,10 +755,9 @@ index 0000000000..b75d129159
 +  }
 +
 +  private renderTooltip() {
-+    const range = getRange(this.props.changesetData)
-+    const { counts } = this.state
++    const { counts, key } = this.state
 +
-+    if (counts === null || this.state.range !== range) {
++    if (counts === null || key !== this.props.countsKey) {
 +      return <>Counting code, test, JSON, and comment lines…</>
 +    }
 +
@@ -527,35 +772,25 @@ index 0000000000..b75d129159
 +  }
 +
 +  private onMouseEnter = async () => {
-+    const { repository, changesetData } = this.props
-+    const range = getRange(changesetData)
-+    const file = changesetData.files.at(0)
++    const { countsKey: key, getCounts } = this.props
 +
-+    if (
-+      file === undefined ||
-+      range === this.state.range ||
-+      range === this.loadingRange
-+    ) {
++    if (key === null || key === this.state.key || key === this.loadingKey) {
 +      return
 +    }
 +
-+    this.loadingRange = range
++    this.loadingKey = key
 +
 +    try {
-+      const counts = await getCodeLineCounts(
-+        repository,
-+        file.parentCommitish,
-+        file.commitish
-+      )
++      const counts = await getCounts()
 +
-+      if (range === getRange(this.props.changesetData)) {
-+        this.setState({ range, counts })
++      if (key === this.props.countsKey) {
++        this.setState({ key, counts })
 +      }
 +    } catch (e) {
 +      log.error('Could not count the code, test, JSON, and comment lines', e)
 +    } finally {
-+      if (this.loadingRange === range) {
-+        this.loadingRange = null
++      if (this.loadingKey === key) {
++        this.loadingKey = null
 +      }
 +    }
 +  }
@@ -575,14 +810,24 @@ index 0000000000..b75d129159
 +    </>
 +  )
 +}
+diff --git a/app/styles/ui/changes/_changes-list.scss b/app/styles/ui/changes/_changes-list.scss
+index 2b95dc85ee..1a7d4a84c2 100644
+--- a/app/styles/ui/changes/_changes-list.scss
++++ b/app/styles/ui/changes/_changes-list.scss
+@@ -152,6 +152,13 @@
+         }
+       }
+ 
++      .working-directory-lines-changed {
++        display: flex;
++        gap: var(--spacing-half);
++        flex-shrink: 0;
++        padding-left: var(--spacing-half);
++      }
 +
-+/** All the files of a changeset share the same range. */
-+function getRange(changesetData: IChangesetData): string | null {
-+  const file = changesetData.files.at(0)
-+  return file === undefined
-+    ? null
-+    : `${file.parentCommitish}..${file.commitish}`
-+}
+       .changes-list-check-all {
+         flex-grow: 1;
+ 
 diff --git a/app/styles/ui/window/_tooltips.scss b/app/styles/ui/window/_tooltips.scss
 index 3e76b9ca5a..307d228ebc 100644
 --- a/app/styles/ui/window/_tooltips.scss
@@ -617,13 +862,17 @@ index 3e76b9ca5a..307d228ebc 100644
 +}
 diff --git a/app/test/unit/code-lines-test.ts b/app/test/unit/code-lines-test.ts
 new file mode 100644
-index 0000000000..0fca5a1bbd
+index 0000000000..a0938ba11a
 --- /dev/null
 +++ b/app/test/unit/code-lines-test.ts
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,215 @@
 +import { describe, it } from 'node:test'
 +import assert from 'node:assert'
-+import { isTestFile, parseCodeLineCounts } from '../../src/lib/git/code-lines'
++import {
++  createAddedFileDiff,
++  isTestFile,
++  parseCodeLineCounts,
++} from '../../src/lib/git/code-lines'
 +
 +function fileDiff(path: string, hunks: ReadonlyArray<string>) {
 +  return [
@@ -813,5 +1062,22 @@ index 0000000000..0fca5a1bbd
 +    ]) {
 +      assert.strictEqual(isTestFile(path), false, path)
 +    }
++  })
++})
++
++describe('createAddedFileDiff', () => {
++  it('adds each line of the file', () => {
++    const diff = [
++      createAddedFileDiff('src/a.ts', '// comment\nconst a = 1\n\n'),
++      createAddedFileDiff('src/a.test.ts', 'it()'),
++      createAddedFileDiff('src/empty.ts', ''),
++    ].join('\n')
++
++    assert.deepStrictEqual(parseCodeLineCounts(diff), {
++      code: { added: 2, deleted: 0 },
++      tests: { added: 1, deleted: 0 },
++      json: { added: 0, deleted: 0 },
++      comments: { added: 1, deleted: 0 },
++    })
 +  })
 +})

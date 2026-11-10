@@ -152,6 +152,13 @@
         }
       }
 
+      .working-directory-lines-changed {
+        display: flex;
+        gap: var(--spacing-half);
+        flex-shrink: 0;
+        padding-left: var(--spacing-half);
+      }
+
       .changes-list-check-all {
         flex-grow: 1;
 
