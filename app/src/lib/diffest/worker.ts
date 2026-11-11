@@ -1,5 +1,4 @@
-import diff from 'diffest'
-import { IDiffestTokens, tokensFromView } from './tokens'
+import type { IDiffestTokens } from './tokens'
 
 /** What the engine sends: the two versions of one file and its extension. */
 export interface IDiffestRequest {
@@ -17,12 +16,24 @@ export type DiffestResponse =
 // origin. This runs in a worker, where it does not.
 const scope = self as unknown as Worker
 
-scope.onmessage = (event: MessageEvent<IDiffestRequest>) => {
-  scope.postMessage(respond(event.data))
+scope.onmessage = async (event: MessageEvent<IDiffestRequest>) => {
+  scope.postMessage(await respond(event.data))
 }
 
-function respond({ before, after, ext }: IDiffestRequest): DiffestResponse {
+async function respond({
+  before,
+  after,
+  ext,
+}: IDiffestRequest): Promise<DiffestResponse> {
   try {
+    // Diffest compiles its WebAssembly before it exports anything. A static
+    // import would set `onmessage` only after that. The request comes first,
+    // so it would be lost, and the engine would wait for an answer forever.
+    const { default: diff } = await import(/* webpackMode: "eager" */ 'diffest')
+    const { tokensFromView } = await import(
+      /* webpackMode: "eager" */ './tokens'
+    )
+
     const view = diff(before, after, ext)
     return { kind: 'tokens', tokens: tokensFromView(view, before, after) }
   } catch (error) {

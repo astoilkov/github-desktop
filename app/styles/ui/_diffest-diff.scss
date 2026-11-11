@@ -3,8 +3,8 @@
 // Only backgrounds are set here. Syntax highlighting colours the text of these
 // same characters, and a changed token should still look like the code it is.
 //
-// The colours are those of the page in `diffing-testing-framework`, so a
-// change reads the same here as in the cases that define it. The variables live
+// The colours are those of Diffest's own page, so a change reads the same
+// here as in the cases that define it. The variables live
 // here rather than in `_variables.scss` and `themes/_dark.scss`, so this fork
 // touches as little of upstream as it can. They follow those files'
 // conventions: `:root` holds the light theme, `body.theme-dark` the dark one.

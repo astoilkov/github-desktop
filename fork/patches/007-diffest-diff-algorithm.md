@@ -6,7 +6,7 @@ Desktop shows diffs the way git computes them: whole lines added and removed.
 The only detail inside a line is a prefix/suffix trim (`relativeChanges`). It
 cannot say *this value went from 2 to 3*, or *this line moved above that one*.
 
-This adds a second algorithm, **Diffest**, from `~/repos/diffing-testing-framework`.
+This adds a second algorithm, **Diffest**, from `~/repos/diffest`.
 When it is on, its marks are painted on top of the diff Desktop already shows:
 a changed value is painted as that value, not as the line that holds it, and
 both ends of a moved line are painted.
@@ -28,11 +28,14 @@ cannot read gets the plain git diff, with no message.
 
 ## Prerequisites
 
-- A sibling `../diffing-testing-framework` checkout, built with `bun run build`.
-  Root `package.json` depends on it as `"diffest": "link:../diffing-testing-framework"`,
+- A sibling `../diffest` checkout, built with `bun run build`.
+  Root `package.json` depends on it as `"diffest": "link:../diffest"`,
   so the repo does not install without it. **Webpack reads `lib/`, not `src/`**:
   after an edit to the algorithm, run `bun run build` again, or Desktop keeps the
   old behaviour.
+- The algorithm is Rust, built to WebAssembly. So `bun run build` needs `cargo`
+  with the `wasm32-unknown-unknown` target, and a clang that writes WebAssembly
+  (`brew install llvm`).
 - The framework's `package.json` must have, and has:
   - `main` and `types`, because Desktop resolves modules the node10 way and
     ignores `exports`;
@@ -167,8 +170,8 @@ New files, which hold most of the code and cannot conflict:
   and cut through words to do so. Diffest's layer
   goes after the search tokens, so a search hit still reads as one. In
   `createFullRow`'s context branch, each side is pushed on its own, without the
-  `??` fallback the syntax tokens use, because each end of a move is marked on
-  its own side.
+  `??` fallback the syntax tokens use, because Diffest marks each side from its
+  own version of the file.
 
   **Hidden deleted rows.** Where git shows an old line as deleted and Diffest
   keeps it, Unified shows it the way Diffest's own page does: once. So
@@ -210,6 +213,23 @@ New files, which hold most of the code and cannot conflict:
   not enough: the rows have already rendered with the old heights, so the
   blank line after a hidden row keeps a tall row's height and the next row is
   cut to one line.
+
+  **Lines git kept and Diffest moved.** A line that git keeps in place can be
+  a line that Diffest reads as moved. An example: `if (width >= 768) {`
+  becomes `if (width >= 1024) {`, and a new `if (width >= 768) { continue; }`
+  comes below it. Git reads a changed condition. Diffest keeps
+  `if (width >= 768) {` and moves the lines under it up into the new `if`.
+  Git shows those lines as context, so one row held both ends of each move.
+  Unified shows only the old side of a context row: the end the line left,
+  dimmed, and no end it moved to. In Split, the line seemed to move to its
+  own place. So before it hides or sorts rows, `withDiffestRows` now takes
+  apart each context row whose old and new lines are on different view
+  lines. The result is an old row and a new row, and each one goes where the
+  view puts it, as any other row does. A context row stays whole when either
+  of its lines is blank, because a blank line has no place in the view. The
+  two new rows have no `diffLineNumber`, and their `hunkStartLine` is `-1`.
+  Nothing reads either value, because line selection is off while Diffest
+  paints a file.
 
   `canSelectLines()` gates line and hunk selection, the gutter checkboxes, and
   line and hunk discard while Diffest paints the file. Otherwise, unticking the
@@ -270,6 +290,12 @@ New files, which hold most of the code and cannot conflict:
 14. With Diffest on, open a file where a formatter only sorted the classes in
     a `class` attribute. The changed rows show no colour. Press ⇧⌘\\: git's
     row colours come back.
+15. With Diffest on, change `if (width >= 768) {`, which has two lines under
+    it, to `if (width >= 1024) {`. Below that block, add
+    `if (width >= 768) { continue; }`. In Unified, the two lines show twice:
+    lit under `if (width >= 1024) {`, and dimmed under `if (width >= 768) {`.
+    Point at either one: both ends light up. In Split, each end has its own
+    row.
 
 ## Caveats
 

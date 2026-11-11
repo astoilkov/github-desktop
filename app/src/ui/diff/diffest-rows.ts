@@ -38,6 +38,9 @@ interface IPlacedRow {
  *
  * In both, the text an edit took out of a line or a change that moved goes
  * into the new row. The row the line left shows the line and not the edit.
+ *
+ * A line git kept in place can be one Diffest reads as moved. Its old and new
+ * line then get a row each, so both ends of the move show.
  */
 export const withDiffestRows = memoize(function (
   rows: ReadonlyArray<SimplifiedDiffRow>,
@@ -48,14 +51,16 @@ export const withDiffestRows = memoize(function (
     return { rows, inline: new Map() }
   }
 
+  const apart = withContextTakenApart(rows, overlay)
+
   if (showSideBySideDiff) {
     return {
-      rows: bySection(rows, section => pairInViewOrder(section, overlay)),
+      rows: bySection(apart, section => pairInViewOrder(section, overlay)),
       inline: byLine(overlay.landedDeletions),
     }
   }
 
-  const { shown, inline } = withRemovedTextInline(rows, overlay)
+  const { shown, inline } = withRemovedTextInline(apart, overlay)
   const inOrder = (section: ReadonlyArray<SimplifiedDiffRow>) =>
     inViewOrder(section, overlay).map(placed => placed.row)
 
@@ -76,6 +81,65 @@ function byLine(
     lines.set(text.afterLine, inLine)
   }
   return lines
+}
+
+/**
+ * The hunk a row taken out of a context row belongs to. Git did not change the
+ * line, so it is in no hunk. Nothing reads this: line selection is off while
+ * Diffest paints a file.
+ */
+const NoHunk = -1
+
+/**
+ * Takes apart each context row whose old and new line Diffest puts on
+ * different view lines, as an old row and a new row. Git kept the line in
+ * place, and Diffest reads it as moved, or as one line removed and another
+ * added. Whole, the row would put both ends of a move on one row, and Unified
+ * would show only the end the line left.
+ */
+function withContextTakenApart(
+  rows: ReadonlyArray<SimplifiedDiffRow>,
+  overlay: IDiffestTokens
+): ReadonlyArray<SimplifiedDiffRow> {
+  return rows.flatMap((row): ReadonlyArray<SimplifiedDiffRow> => {
+    if (row.type !== DiffRowType.Context) {
+      return [row]
+    }
+
+    const { content, beforeLineNumber, afterLineNumber } = row
+    const beforeRow = getLineRow(overlay.beforeLineRows, beforeLineNumber)
+    const afterRow = getLineRow(overlay.afterLineRows, afterLineNumber)
+    // A line with no text has no place in the view, so nothing says where
+    // either half would go.
+    if (
+      beforeRow === undefined ||
+      afterRow === undefined ||
+      beforeRow === afterRow
+    ) {
+      return [row]
+    }
+
+    const half = (lineNumber: number) => ({
+      content,
+      lineNumber,
+      diffLineNumber: null,
+      noNewLineIndicator: false,
+      tokens: [],
+    })
+
+    return [
+      {
+        type: DiffRowType.Deleted,
+        data: half(beforeLineNumber),
+        hunkStartLine: NoHunk,
+      },
+      {
+        type: DiffRowType.Added,
+        data: half(afterLineNumber),
+        hunkStartLine: NoHunk,
+      },
+    ]
+  })
 }
 
 /**

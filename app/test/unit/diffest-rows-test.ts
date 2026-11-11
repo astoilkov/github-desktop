@@ -238,6 +238,117 @@ describe('withDiffestRows', () => {
   })
 })
 
+// Git reads `768` changed to `1024`, and a new `if` added below. Diffest keeps
+// `if (width >= 768) {`, and moves the two lines under it up into the new
+// `if`. Git shows those two lines as context, so each one is a single row
+// that holds both ends of its move.
+describe('withDiffestRows context Diffest moved', () => {
+  const before = [
+    'for (const width of widths) {',
+    '  // From 768px the desktop bar holds the link.',
+    '  if (width >= 768) {',
+    '    await expect(desktop).toBeInViewport();',
+    '    await expect(desktop).toHaveAttribute("href", href);',
+    '    continue;',
+    '  }',
+    '  await openMenu.click();',
+    '}',
+    '',
+  ].join('\n')
+  const after = [
+    'for (const width of widths) {',
+    '  // From 1024px the desktop bar holds the link.',
+    '  if (width >= 1024) {',
+    '    await expect(desktop).toBeInViewport();',
+    '    await expect(desktop).toHaveAttribute("href", href);',
+    '    continue;',
+    '  }',
+    '  if (width >= 768) {',
+    '    continue;',
+    '  }',
+    '  await openMenu.click();',
+    '}',
+    '',
+  ].join('\n')
+  const tokens = tokensFromView(diff(before, after, '.ts'), before, after)
+  const kept = [4, 5, 6, 7].map(line => context(line, line))
+  const tail = [context(8, 11), context(9, 12)]
+
+  it('shows both ends of each move in Unified', () => {
+    assert.ok(tokens !== null)
+    const rows = [
+      context(1, 1),
+      deleted(2),
+      deleted(3),
+      added(2),
+      added(3),
+      ...kept,
+      ...[8, 9, 10].map(added),
+      ...tail,
+    ]
+
+    const { rows: shown } = withDiffestRows(rows, tokens, false)
+
+    assert.deepStrictEqual(describeRows(shown), [
+      '=1',
+      '+2',
+      '+3',
+      '+4',
+      '+5',
+      '+6',
+      '+7',
+      '+8',
+      '-4',
+      '-5',
+      '+9',
+      '+10',
+      '=11',
+      '=12',
+    ])
+  })
+
+  it('pairs each kept line with the line Diffest pairs it with in Split', () => {
+    assert.ok(tokens !== null)
+    const rows = [
+      context(1, 1),
+      modified(2, 2),
+      modified(3, 3),
+      ...kept,
+      ...[8, 9, 10].map(added),
+      ...tail,
+    ]
+
+    const { rows: shown } = withDiffestRows(rows, tokens, true)
+
+    assert.deepStrictEqual(describeRows(shown), [
+      '=1',
+      '2|2',
+      '+3',
+      '+4',
+      '+5',
+      '+6',
+      '+7',
+      '3|8',
+      '-4',
+      '-5',
+      '6|9',
+      '7|10',
+      '=11',
+      '=12',
+    ])
+  })
+
+  it('keeps a context row whole when one of its lines has no place', () => {
+    const { rows: shown } = withDiffestRows(
+      [context(1, 2)],
+      overlay([null], [null, 3]),
+      false
+    )
+
+    assert.deepStrictEqual(describeRows(shown), ['=2'])
+  })
+})
+
 describe('withDiffestRows landed deletions', () => {
   const removed = { afterLine: 1, column: 12, text: 'owner' }
   const landed = { ...overlay([0, 1], [0, 1]), landedDeletions: [removed] }

@@ -1228,8 +1228,8 @@ export class SideBySideDiff extends React.Component<
 
       // Each side on its own, unlike the syntax tokens above. Those fall back
       // to the other side because only one of the two may have been
-      // highlighted. Diffest always marks both, and a context line can carry a
-      // mark on one side only: each end of a move is marked on its own side.
+      // highlighted. Diffest always marks both, each from its own version of
+      // the file.
       const beforeDiffestTokens = getTokens(
         row.beforeLineNumber,
         this.state.beforeDiffestTokens
