@@ -62,7 +62,13 @@ export class WorkingDirectoryLinesChanged extends React.Component<
       return null
     }
 
-    const groups = [counts.code, counts.tests, counts.json, counts.comments]
+    const groups = [
+      counts.code,
+      counts.imports,
+      counts.tests,
+      counts.json,
+      counts.comments,
+    ]
 
     return (
       <LinesChanged

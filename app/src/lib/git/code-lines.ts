@@ -12,19 +12,46 @@ export interface ILineCounts {
 
 /**
  * Each line is in one group only. Tests come first, then JSON, then comments,
- * so a comment in a test file is a test line.
+ * then imports, so a comment in a test file is a test line.
  */
 export interface ICodeLineCounts {
   readonly code: ILineCounts
   readonly tests: ILineCounts
   readonly json: ILineCounts
   readonly comments: ILineCounts
+  readonly imports: ILineCounts
 }
 
 interface ICommentSyntax {
   readonly linePrefixes: ReadonlyArray<string>
   readonly blocks: ReadonlyArray<readonly [open: string, close: string]>
 }
+
+interface IImportSyntax {
+  /** Finds the first line of an import statement. */
+  readonly start: RegExp
+  /** True when the statement continues after its first line. */
+  readonly isOpenAfter: (firstLine: string) => boolean
+  /** True when the statement stops at this line. */
+  readonly closes: (line: string) => boolean
+}
+
+interface IFileSyntax {
+  readonly comments: ICommentSyntax | null
+  readonly imports: IImportSyntax | null
+}
+
+/**
+ * The state of one side of a hunk at the start of its next line. Added lines
+ * and removed lines each have one.
+ */
+interface ISideState {
+  /** The marker that closes the open block comment, or null. */
+  blockClose: string | null
+  isInImport: boolean
+}
+
+type LineKind = 'code' | 'comment' | 'import'
 
 interface IMutableLineCounts {
   added: number
@@ -63,15 +90,21 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
   const tests = { added: 0, deleted: 0 }
   const json = { added: 0, deleted: 0 }
   const comments = { added: 0, deleted: 0 }
+  const imports = { added: 0, deleted: 0 }
+  const countsByKind: Record<LineKind, IMutableLineCounts> = {
+    code,
+    comment: comments,
+    import: imports,
+  }
 
   let oldPath: string | null = null
   let newPath: string | null = null
   let isTest = false
   let isJson = false
-  let syntax: ICommentSyntax | null = null
+  let syntax: IFileSyntax = { comments: null, imports: null }
   let isInHunk = false
-  let addedBlockClose: string | null = null
-  let deletedBlockClose: string | null = null
+  const added: ISideState = { blockClose: null, isInImport: false }
+  const deleted: ISideState = { blockClose: null, isInImport: false }
 
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
@@ -90,61 +123,42 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
         const path = newPath ?? oldPath ?? ''
         isTest = isTestFile(path)
         isJson = isJsonFile(path)
-        syntax = getCommentSyntax(path)
+        syntax = getFileSyntax(path)
         isInHunk = true
-        addedBlockClose = null
-        deletedBlockClose = null
+        resetSideState(added)
+        resetSideState(deleted)
       }
       continue
     }
 
     if (line.startsWith('@@')) {
-      addedBlockClose = null
-      deletedBlockClose = null
+      resetSideState(added)
+      resetSideState(deleted)
       continue
     }
 
     const sign = line[0]
     const content = line.slice(1)
 
-    // A context line is in both sides, so it moves the block comment state of
-    // both sides.
-    if (sign === ' ' && syntax !== null) {
-      addedBlockClose = readCommentLine(
-        content,
-        syntax,
-        addedBlockClose
-      ).blockClose
-      deletedBlockClose = readCommentLine(
-        content,
-        syntax,
-        deletedBlockClose
-      ).blockClose
+    // A context line is in both sides, so it moves the state of both sides.
+    if (sign === ' ') {
+      readLine(content, syntax, added)
+      readLine(content, syntax, deleted)
     }
 
     if (sign !== '+' && sign !== '-') {
       continue
     }
 
-    let counts: IMutableLineCounts = code
+    let counts: IMutableLineCounts
 
     if (isTest) {
       counts = tests
     } else if (isJson) {
       counts = json
-    } else if (syntax !== null) {
-      const blockClose = sign === '+' ? addedBlockClose : deletedBlockClose
-      const result = readCommentLine(content, syntax, blockClose)
-
-      if (sign === '+') {
-        addedBlockClose = result.blockClose
-      } else {
-        deletedBlockClose = result.blockClose
-      }
-
-      if (result.isComment) {
-        counts = comments
-      }
+    } else {
+      counts =
+        countsByKind[readLine(content, syntax, sign === '+' ? added : deleted)]
     }
 
     if (sign === '+') {
@@ -154,7 +168,7 @@ export function parseCodeLineCounts(diff: string): ICodeLineCounts {
     }
   }
 
-  return { code, tests, json, comments }
+  return { code, tests, json, comments, imports }
 }
 
 /**
@@ -368,18 +382,95 @@ const syntaxByFileName: ReadonlyMap<string, ICommentSyntax> = new Map([
   ['.env', hashLike],
 ])
 
-/** The comment markers for a path, or null when its language is unknown. */
-function getCommentSyntax(path: string): ICommentSyntax | null {
+/**
+ * `import a from 'b'`, `import type { A } from 'b'`, and `import 'b'`. A
+ * multi-line import stops at the line with the module name. `import('b')` and
+ * `import.meta` are not imports.
+ */
+const javaScriptImports: IImportSyntax = {
+  start: /^import(\s|[{*'"])/,
+  isOpenAfter: line =>
+    line.includes('{') && !line.includes('}') && !/['"]/.test(line),
+  closes: line => /['"]/.test(line),
+}
+
+/** `use a::b;`, `pub(crate) use a::{b, c};`, and `extern crate a;`. */
+const rustImports: IImportSyntax = {
+  start: /^((pub(\([^)]*\))?\s+)?use\s|extern\s+crate\s)/,
+  isOpenAfter: line => !line.includes(';'),
+  closes: line => line.includes(';'),
+}
+
+/** `import Foundation`, `@testable import App`, and `import struct A.B`. */
+const swiftImports: IImportSyntax = {
+  start: /^(@\w+\s+)*import\s/,
+  isOpenAfter: () => false,
+  closes: () => true,
+}
+
+const importSyntaxByExtension: ReadonlyMap<string, IImportSyntax> = new Map([
+  ...['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'].map(
+    e => [e, javaScriptImports] as const
+  ),
+  ['rs', rustImports],
+  ['swift', swiftImports],
+])
+
+function getFileSyntax(path: string): IFileSyntax {
   const fileName = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   const byName = syntaxByFileName.get(fileName)
   if (byName !== undefined) {
-    return byName
+    return { comments: byName, imports: null }
   }
 
   const dot = fileName.lastIndexOf('.')
-  return dot === -1
-    ? null
-    : syntaxByExtension.get(fileName.slice(dot + 1)) ?? null
+  const extension = dot === -1 ? null : fileName.slice(dot + 1)
+  return extension === null
+    ? { comments: null, imports: null }
+    : {
+        comments: syntaxByExtension.get(extension) ?? null,
+        imports: importSyntaxByExtension.get(extension) ?? null,
+      }
+}
+
+/** Find the kind of a line and move the state of its side to the next line. */
+function readLine(
+  content: string,
+  syntax: IFileSyntax,
+  state: ISideState
+): LineKind {
+  if (syntax.comments !== null) {
+    const result = readCommentLine(content, syntax.comments, state.blockClose)
+    state.blockClose = result.blockClose
+
+    if (result.isComment) {
+      return 'comment'
+    }
+  }
+
+  if (syntax.imports === null) {
+    return 'code'
+  }
+
+  const text = content.trim()
+
+  if (state.isInImport) {
+    state.isInImport = !syntax.imports.closes(text)
+    return 'import'
+  }
+
+  if (!syntax.imports.start.test(text)) {
+    return 'code'
+  }
+
+  state.isInImport = syntax.imports.isOpenAfter(text)
+  return 'import'
+}
+
+/** A new hunk starts with an unknown state, so it has no open statements. */
+function resetSideState(state: ISideState) {
+  state.blockClose = null
+  state.isInImport = false
 }
 
 /**

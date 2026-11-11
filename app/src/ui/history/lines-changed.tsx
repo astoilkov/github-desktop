@@ -23,8 +23,8 @@ interface ILinesChangedState {
 }
 
 /**
- * The code, test, JSON, and comment counts load on hover, because they can
- * need the full diff of every file.
+ * The counts in the tooltip load on hover, because they can need the full diff
+ * of every file.
  */
 export class LinesChanged extends React.Component<
   ILinesChangedProps,
@@ -77,12 +77,13 @@ export class LinesChanged extends React.Component<
     const { counts, key } = this.state
 
     if (counts === null || key !== this.props.countsKey) {
-      return <>Counting code, test, JSON, and comment lines…</>
+      return <>Counting the lines…</>
     }
 
     return (
       <div className="lines-changed-table">
         <LineCountsRow label="Code" counts={counts.code} />
+        <LineCountsRow label="Imports" counts={counts.imports} />
         <LineCountsRow label="Tests" counts={counts.tests} />
         <LineCountsRow label="JSON" counts={counts.json} />
         <LineCountsRow label="Comments" counts={counts.comments} />
@@ -106,7 +107,7 @@ export class LinesChanged extends React.Component<
         this.setState({ key, counts })
       }
     } catch (e) {
-      log.error('Could not count the code, test, JSON, and comment lines', e)
+      log.error('Could not count the lines of each group', e)
     } finally {
       if (this.loadingKey === key) {
         this.loadingKey = null

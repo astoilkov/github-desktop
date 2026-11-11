@@ -40,6 +40,7 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 2, deleted: 1 },
       json: { added: 0, deleted: 0 },
       comments: { added: 2, deleted: 1 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 
@@ -60,6 +61,82 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 1, deleted: 0 },
       json: { added: 3, deleted: 1 },
       comments: { added: 0, deleted: 0 },
+      imports: { added: 0, deleted: 0 },
+    })
+  })
+
+  it('puts the imports of TypeScript, Rust, and Swift into their own group', () => {
+    const diff = [
+      fileDiff('src/a.ts', [
+        '@@ -1,2 +1,10 @@',
+        "-import a from 'a'",
+        "+import a, { b } from 'a'",
+        "+import type { C } from 'c'",
+        "+import 'side-effect'",
+        '+import {',
+        '+  d,',
+        '+  // why d',
+        '+  e,',
+        "+} from 'd'",
+        "+const f = await import('f')",
+        ' run()',
+      ]),
+      fileDiff('src/lib.rs', [
+        '@@ -0,0 +1,7 @@',
+        '+use std::fmt;',
+        '+pub(crate) use crate::a::{',
+        '+    b,',
+        '+    c,',
+        '+};',
+        '+extern crate d;',
+        '+fn main() {}',
+      ]),
+      fileDiff('App/View.swift', [
+        '@@ -0,0 +1,3 @@',
+        '+import SwiftUI',
+        '+@testable import App',
+        '+struct View {}',
+      ]),
+      fileDiff('main.py', ['@@ -0,0 +1 @@', '+import os']),
+    ].join('\n')
+
+    assert.deepStrictEqual(parseCodeLineCounts(diff), {
+      code: { added: 4, deleted: 0 },
+      tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
+      comments: { added: 1, deleted: 0 },
+      imports: { added: 15, deleted: 1 },
+    })
+  })
+
+  it('finds the start of a multi-line import in the context lines', () => {
+    const diff = fileDiff('a.tsx', [
+      '@@ -1,4 +1,4 @@',
+      ' import {',
+      '-  a,',
+      '+  b,',
+      " } from 'x'",
+      '+run()',
+    ])
+
+    assert.deepStrictEqual(parseCodeLineCounts(diff), {
+      code: { added: 1, deleted: 0 },
+      tests: { added: 0, deleted: 0 },
+      json: { added: 0, deleted: 0 },
+      comments: { added: 0, deleted: 0 },
+      imports: { added: 1, deleted: 1 },
+    })
+  })
+
+  it('puts the imports of a test file into tests', () => {
+    const diff = fileDiff('src/a.test.ts', [
+      '@@ -0,0 +1 @@',
+      "+import a from 'a'",
+    ])
+
+    assert.deepStrictEqual(parseCodeLineCounts(diff).tests, {
+      added: 1,
+      deleted: 0,
     })
   })
 
@@ -78,6 +155,7 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 0, deleted: 0 },
       json: { added: 0, deleted: 0 },
       comments: { added: 3, deleted: 0 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 
@@ -106,6 +184,7 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 0, deleted: 0 },
       json: { added: 0, deleted: 0 },
       comments: { added: 1, deleted: 1 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 
@@ -121,6 +200,7 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 0, deleted: 0 },
       json: { added: 0, deleted: 0 },
       comments: { added: 0, deleted: 1 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 
@@ -162,6 +242,7 @@ describe('parseCodeLineCounts', () => {
       tests: { added: 0, deleted: 0 },
       json: { added: 0, deleted: 0 },
       comments: { added: 0, deleted: 0 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 })
@@ -210,6 +291,7 @@ describe('createAddedFileDiff', () => {
       tests: { added: 1, deleted: 0 },
       json: { added: 0, deleted: 0 },
       comments: { added: 1, deleted: 0 },
+      imports: { added: 0, deleted: 0 },
     })
   })
 })
