@@ -1,7 +1,7 @@
 /* eslint-disable no-sync */
 
 import * as cp from 'child_process'
-import { existsSync, rmSync } from 'fs'
+import { existsSync, realpathSync, rmSync } from 'fs'
 import { join } from 'path'
 import { getProductName } from '../app/package-info'
 import { getDistPath } from './dist-info'
@@ -26,6 +26,8 @@ function deployLocal() {
   }
 
   assertSigningIdentityExists()
+
+  buildDiffest()
 
   console.log(`Building a production app signed with "${signIdentity}"…`)
   cp.execSync('yarn build:prod', {
@@ -63,6 +65,16 @@ function deployLocal() {
   cp.execSync(`open "${destination}"`)
 
   console.log(`\nDeployed ${productName} to ${destination}.`)
+}
+
+// The app bundles diffest's built `lib/`, not its source, so build it first.
+function buildDiffest() {
+  const diffestDir = realpathSync(
+    join(__dirname, '..', 'node_modules', 'diffest')
+  )
+
+  console.log(`Building diffest in ${diffestDir}…`)
+  cp.execSync('bun run build', { cwd: diffestDir, stdio: 'inherit' })
 }
 
 function assertSigningIdentityExists() {
