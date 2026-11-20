@@ -1,9 +1,9 @@
 diff --git a/app/src/lib/diffest/engine.ts b/app/src/lib/diffest/engine.ts
 new file mode 100644
-index 0000000000..fb9728f0fe
+index 0000000000..ea19be7f99
 --- /dev/null
 +++ b/app/src/lib/diffest/engine.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,212 @@
 +import * as Path from 'path'
 +import { createHash } from 'crypto'
 +import QuickLRU from 'quick-lru'
@@ -13,22 +13,39 @@ index 0000000000..fb9728f0fe
 +import type { DiffestResponse, IDiffestRequest } from './worker'
 +
 +/**
-+ * The extensions Diffest has a parser for. It reads `.css` and `.html` with
-+ * their own grammars and everything else as JavaScript, so a file outside this
-+ * list would be read with the wrong grammar rather than not at all.
++ * The extensions Diffest has an algorithm for, the same list as `algorithm` in
++ * Diffest's `src/algorithm/src/lib.rs`. Diffest throws on all other files, so
++ * a file outside this list gets the git diff and no worker starts for it. When
++ * Diffest gets a language, add its extensions here.
 + */
 +const DiffestExtensions = new Set([
++  // TypeScript, and JavaScript, which Diffest reads as TypeScript.
++  '.ts',
++  '.mts',
++  '.cts',
++  '.tsx',
 +  '.js',
 +  '.jsx',
 +  '.mjs',
 +  '.cjs',
-+  '.ts',
-+  '.tsx',
-+  '.mts',
-+  '.cts',
 +  '.css',
-+  '.html',
-+  '.htm',
++  // Markdown and plain text, which one algorithm reads word by word.
++  '.md',
++  '.markdown',
++  '.txt',
++  '.text',
++  // C++, and C, CUDA and Metal, which the C++ algorithm also reads.
++  '.cpp',
++  '.cc',
++  '.cxx',
++  '.hpp',
++  '.hh',
++  '.hxx',
++  '.h',
++  '.c',
++  '.cu',
++  '.cuh',
++  '.metal',
 +])
 +
 +/**

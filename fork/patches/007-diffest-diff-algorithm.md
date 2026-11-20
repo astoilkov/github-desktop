@@ -123,8 +123,11 @@ New files, which hold most of the code and cannot conflict:
   are virtualized and a class would go with a row that scrolls away. `syntaxHighlightLine` prefixes each class with `cm-`.
 
 - **`engine.ts`** — returns `null`, and so the git diff, for:
-  - an extension outside `.js .jsx .mjs .cjs .ts .tsx .mts .cts .css .html
-    .htm` (Diffest reads everything else as JavaScript);
+  - an extension that Diffest has no algorithm for. `DiffestExtensions` is
+    the same list as `algorithm` in Diffest's `src/algorithm/src/lib.rs`:
+    TypeScript and JavaScript, `.css`, Markdown and plain text, and C++ with
+    C, CUDA and Metal. Diffest throws on all other files, so no worker starts
+    for them. When Diffest gets a language, add its extensions to the list;
   - an added or deleted file;
   - a rename that changed the extension;
   - `!canBeExpanded` (the new side was cut mid-line at 1MB);
@@ -269,7 +272,7 @@ New files, which hold most of the code and cannot conflict:
 7. Unified ↔ Split: the marks stay, and no new worker starts.
 8. Arrow through a long list of changed files: at most one worker runs per
    diff, and the marks that land match the file on screen.
-9. Plain git diff, with no `.diffest-overlay`, for: a `.md` file, a binary
+9. Plain git diff, with no `.diffest-overlay`, for: a `.py` file, a binary
    file, an added file, a deleted file, a `util.js → util.ts` rename, and a
    file over 3,000 lines.
 10. With Diffest on, in Unified, change a function signature by adding a
